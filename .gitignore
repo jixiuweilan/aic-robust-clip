@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environments and editors
+.venv/
+venv/
+.env
+.env.*
+.idea/
+.vscode/
+*.swp
+
+# Local competition assets
+data/*
+!data/README.md
+checkpoints/*
+!checkpoints/README.md
+outputs/*
+!outputs/README.md
+
+# Common model and generated artifacts outside the reserved directories
+*.ckpt
+*.onnx
+*.pth
+*.pt
+*.safetensors
+pred_results.csv
+submission.zip
+
+# OS metadata
+.DS_Store
+Thumbs.db
