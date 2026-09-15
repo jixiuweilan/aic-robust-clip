@@ -29,6 +29,27 @@ Recognition Fine-Tuning with Noisy Labels."
 - Do not commit competition data, checkpoints, credentials, or generated
   submissions.
 
+## Local machine execution limit
+
+User rule established on 2026-09-15: this machine has insufficient GPU memory
+for formal training. Local execution is limited to code-correctness tests and
+bounded checks that training can start successfully.
+
+- Training startup checks must use a small batch and an explicit, finite step
+  limit, sufficient to verify data loading, forward/backward passes and an
+  optimizer update. Stop when that check is complete.
+- Do not run formal training, full training epochs, baseline fitting for
+  reported scores, hyperparameter searches, or the research experiment matrix
+  on this machine. Moving the work to CPU or reducing the model/batch size
+  does not remove this limit.
+- Run formal experiments and sustained performance profiling on a separate
+  machine with sufficient memory. Preparing their code/configuration locally
+  does not authorize executing them locally.
+- Report local checks as correctness/startup validation only, not evidence of
+  convergence, accuracy, or completed experiments.
+- Future training entry points must offer an explicitly bounded startup-check
+  mode; it must never automatically continue into formal training.
+
 ## Engineering expectations
 
 - Prefer configuration-driven experiments with explicit seeds and data-stage

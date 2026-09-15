@@ -14,6 +14,13 @@ submission-format validator. The research design includes a literature
 synthesis, candidate methods, validation protocol, and 29 planned experiment
 entries. It does not yet contain a training or inference implementation.
 
+## Local execution limit
+
+This machine is for code-correctness tests and short, explicitly step-limited
+training startup checks only, because its GPU memory is insufficient for
+formal training. Run formal baselines, tuning, and research experiments on a
+separate machine with sufficient memory. See [project rules](AGENTS.md).
+
 ## Non-negotiable competition constraints
 
 | Area | Requirement |

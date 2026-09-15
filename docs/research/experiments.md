@@ -6,6 +6,15 @@ IDs and dependencies. It is not consumed by a training program. Read
 [candidates](candidates.md) for module definitions and
 [validation](validation.md) for the selection rule.
 
+## Execution location
+
+Per the [local machine rule](../../AGENTS.md), this machine may run only
+code-correctness tests and bounded training startup checks. Every training
+profile and scored training run below is intended for a separate machine with
+sufficient GPU memory, including frozen-feature classifier fitting. Local
+startup checks are not completed matrix runs and do not produce performance
+evidence. Code and configurations can be prepared locally.
+
 ## 1. Shared profiles
 
 All settings below are starting choices, not measured optima. Use the complete
@@ -33,7 +42,8 @@ or backbone change in the visual core. JoAPR* has its own specified Mixup and
 partitioning, which must be recorded as recipe differences. Give prompt
 comparators the same 20 epochs, but measure extra partition/OT passes separately.
 
-No GPU-hour estimate is justified yet. Before scheduling, measure at least
+No GPU-hour estimate is justified yet. On the separate training machine,
+before scheduling, measure at least
 100 representative steps after warm-up, one scoring pass, and peak memory for
 each distinct family. Estimate total cost from epoch steps plus scoring,
 reference-encoder and transport passes. Fit the microbatch to the actual

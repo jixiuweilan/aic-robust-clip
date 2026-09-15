@@ -26,6 +26,10 @@ hardware, and submission limits remain unknown. The registry is a design
 artifact, not an executable trainer configuration. Coefficients are proposed
 starting points, and no experimental results or measured speedups are claimed.
 
+The current machine is restricted to code tests and bounded training startup
+checks due to insufficient GPU memory. Formal baseline runs and the experiment
+matrix belong on a separate training machine; see [AGENTS.md](../AGENTS.md).
+
 ## Suggested reading order
 
 1. **CLIP** establishes the required backbone and its image-text representation.
