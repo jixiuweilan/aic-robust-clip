@@ -21,11 +21,21 @@ scripts and remote runners can handle them consistently. Verify bytes with
 | [`papers/lora-2022.pdf`](papers/lora-2022.pdf) | [Hu et al., ICLR 2022](https://arxiv.org/abs/2106.09685) | Low-rank parameter-efficient adaptation |
 | [`papers/joapr-2024.pdf`](papers/joapr-2024.pdf) | [Guo and Gu, CVPR 2024](https://openaccess.thecvf.com/content/CVPR2024/html/Guo_JoAPR_Cleaning_the_Lens_of_Prompt_Learning_for_Vision-Language_Models_CVPR_2024_paper.html) | Prompt learning under noisy labels |
 
+## Additional research material
+
+- [NLPrompt, CVPR 2025](papers/nlprompt-2025.pdf), downloaded 2026-09-15 from
+  the [official CVF PDF](https://openaccess.thecvf.com/content/CVPR2025/papers/Pan_NLPrompt_Noise-Label_Prompt_Learning_for_Vision-Language_Models_CVPR_2025_paper.pdf).
+- [Research source register](research-sources.md): 14 references covering
+  adaptation, noisy-label learning, long-tail correction, and feature
+  preservation. It records primary URLs and the evidence inspected.
+- [Literature synthesis and experimental design](../docs/research-notes.md).
+
 The organizer also names **TrustCLIP: Learning from Noisy Labels via Semantic
 Label Verification and Trust-aligned Gradient Projection** (ACM MM 2025,
 [DOI 10.1145/3746027.3755415](https://doi.org/10.1145/3746027.3755415)). The
-checked metadata marked the paper closed-access, so this repository records the
-canonical link but does not include an unauthorized copy.
+full method was not obtained in the 2026-09-15 review. This repository records
+the canonical link and primary publication listings; public-manuscript
+availability remains unresolved.
 
 ## Implementation sources
 

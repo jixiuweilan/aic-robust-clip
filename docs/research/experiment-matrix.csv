@@ -1,0 +1,30 @@
+id,phase,candidate,profile,control,depends_on,gate,seeds,variants,max_epochs,status,purpose
+D00,audit,manifest_and_split,audit,,none,current_stage_data,17,1,0,planned,Freeze stage manifests label quality names and duplicate groups
+B01,screen,C0,CACHE20,,D00,data_gate_passed,17,1,20,planned,Frozen encoder linear classifier starting baseline
+B02,screen,C1,CACHE20,B01,B01,optional_budget,17,1,20,planned,Residual adapter on identical cached features
+B03,screen,C2_000,ONLINE10,B04,B01,data_gate_passed,17,1,10,planned,Plain visual LoRA plus CE factorial reference
+B04,screen,C0_online,ONLINE10,,B01,data_gate_passed,17,1,10,planned,Matched image augmentation frozen encoder control
+B05,screen,C1_online,ONLINE10,B04,B04,optional_budget,17,1,10,planned,Online adapter versus online frozen and LoRA
+R01,loss,C2_GCE,ONLINE10,B03,B03,data_gate_passed,17,1,10,planned,GCE q 0.7 without W P I
+R02,loss,C2_SCE,ONLINE10,B03,B03,optional_budget,17,1,10,planned,SCE alpha 1 beta 1 without W P I
+R03,loss,C3_ELR,ONLINE10,B03,B03,optional_budget,17,1,10,planned,Basic single-network ELR beta 0.7 lambda 1
+L01,prior,C2_posthoc,eval,B03,B03,data_gate_passed,17,3,0,planned,Post-hoc tau 0 or 0.5 or 1 using saved dev logits
+F100,factorial,C2_100,ONLINE10,B03,B03,data_gate_passed,17,1,10,planned,Classwise soft weighting only
+F010,factorial,C2_010,ONLINE10,B03,B03,data_gate_passed,17,1,10,planned,Feature preservation only
+F001,factorial,C2_001,ONLINE10,B03,B03,data_gate_passed,17,1,10,planned,Training prior correction only
+F110,factorial,C2_110,ONLINE10,F100|F010,F100|F010,core_expansion,17,1,10,planned,Weighting and preservation interaction
+F101,factorial,C2_101,ONLINE10,F100|F001,F100|F001,core_expansion,17,1,10,planned,Weighting and prior interaction
+F011,factorial,C2_011,ONLINE10,F010|F001,F010|F001,core_expansion,17,1,10,planned,Preservation and prior interaction
+F111,factorial,C2_111,ONLINE10,F110|F101|F011,F110|F101|F011,core_expansion,17,1,10,planned,All three modules together
+A01,ablation,C2_global_weights,ONLINE10,F100,F100,optional_budget,17,1,10,planned,Replace only within-class loss ranks with global ranks
+A02,ablation,C2_zero_floor,ONLINE10,F100,F100,optional_budget,17,1,10,planned,Change only weight floor from 0.2 to zero
+P00,prompt,C4_zero_shot,eval,,D00,official_names,17,1,0,planned,Single fixed text template zero-shot baseline
+P01,prompt,C4_CE,PROMPT20,P00,P00,official_names,17,1,20,planned,Shared 16-token CoOp CE baseline
+P02,prompt,C4_GCE,PROMPT20,P01,P01,official_names,17,1,20,planned,CoOp GCE q 0.7
+P03,prompt,C4_MAE,PROMPT20,P01,P01,official_names,17,1,20,planned,PromptMAE with class-summed absolute error
+P04,prompt,C4_JoAPR_star,PROMPT20,P01,P01,official_names_and_port_review,17,1,20,planned,JoAPR star adaptation without entropy compensation
+P05,prompt,C4_NLPrompt,PROMPT20,P03,P03,official_names_and_port_review,17,1,20,planned,OT partition with uniform class marginal
+P06,prompt,C4_NLPrompt_prior,PROMPT20,P05,P05,official_names_and_long_tail,17,1,20,planned,Change only OT class marginal to observed training prior
+Q01,replicate,baseline_and_up_to_two_finalists,LONG30,B03,B03,dev_shortlist_frozen,17|29|43,3,30,planned,Up to nine fresh training runs with locked selected recipe IDs
+Q02,confirm,locked_shortlist,eval,B03,Q01,confirm_unopened_and_recipes_locked,17|29|43,3,0,planned,One confirmation review of all locked models no tuning
+Q03,refit,one_selected_recipe,refit,,Q02,recipe_and_epoch_budget_locked,17,1,30,planned,One stage-specific full-data refit with actual epochs fixed from Q01 dev

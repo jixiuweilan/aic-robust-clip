@@ -8,9 +8,11 @@ Image Recognition Fine-Tuning with Noisy Labels**.
 - Local official documents: [`references/official/`](references/official/)
 - Source review date: **2026-09-15**
 
-The repository currently contains the competition brief, archived reference
-material, a safe project layout, and a submission-format validator. It does
-not yet contain a training or inference implementation.
+The repository contains the competition brief, archived reference material,
+a [research design](docs/research-notes.md), a project layout, and a
+submission-format validator. The research design includes a literature
+synthesis, candidate methods, validation protocol, and 29 planned experiment
+entries. It does not yet contain a training or inference implementation.
 
 ## Non-negotiable competition constraints
 
