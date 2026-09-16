@@ -52,6 +52,16 @@ bounded checks that training can start successfully.
 
 ## Engineering expectations
 
+- All downloads are delegated to the user (rule established 2026-09-16).
+  Agents must not initiate package, model-weight, or dataset downloads.
+  Prepare explicit user-run commands or offline installation instructions;
+  report missing assets rather than silently fetching them. Provisioning
+  commands are user-operated and must never be invoked by tests or training.
+- Use Miniconda with the project-local prefix `.conda/aic-robust-clip`.
+  Do not install dependencies into `base` or another project's environment.
+  Agents may create the environment from cached packages with `--offline`;
+  downloading missing Conda or pip packages remains the user's responsibility.
+
 - Prefer configuration-driven experiments with explicit seeds and data-stage
   identifiers.
 - Record dependency versions, configuration, seed, source revision, metrics,

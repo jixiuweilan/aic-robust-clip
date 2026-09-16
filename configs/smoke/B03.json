@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "recipe": "B03",
+  "stage": "preliminary",
+  "execution_mode": "smoke",
+  "seed": 17,
+  "device": "cpu",
+  "machine_config": null,
+  "manifest": "../../outputs/fixtures/train-audit.json",
+  "split": "../../outputs/fixtures/split-v2.json",
+  "class_map": "../../outputs/fixtures/class-map.json",
+  "weights": "../../checkpoints/openai-clip-vit-b32",
+  "weight_revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+  "train_cache": "../../outputs/startup-checks/cache-train",
+  "dev_cache": "../../outputs/startup-checks/cache-dev",
+  "head": "../../outputs/startup-checks/shared-head",
+  "output": "../../outputs/startup-checks/B03",
+  "batch_size": 1,
+  "effective_batch_size": 128,
+  "limits": {
+    "max_samples": 8,
+    "max_updates": 2,
+    "max_eval_batches": 2
+  },
+  "parameters": {}
+}

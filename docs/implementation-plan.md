@@ -1,8 +1,12 @@
 # Implementation Task Plan and Agent Handoff
 
-Prepared **2026-09-16**. Status: **planning complete; implementation not
-started**. This document defines work for agents assigned by the user. It does
-not authorize running formal training on the current machine.
+Prepared **2026-09-16**. Status: **review defects repaired with bounded synthetic
+regression coverage; full task acceptance remains pending**. The N01–N05
+engineering implementation and command handoff are available in
+[the current handoff](handoff.md); T09 acceptance and research experiments
+remain pending. This document defines work for
+agents assigned by the user. It does not authorize running formal training on
+the current machine.
 
 ## Goal and current evidence
 
@@ -25,10 +29,35 @@ image decoding, image-level duplicates, and full archive SHA-256 remain
 unchecked. No class-name mapping or separate clean validation set was found
 inside these two archives. Both archives are ignored by Git.
 
-Existing code consists of a standard-library CSV/ZIP submission validator and
-seven tests. There is no data loader, CLIP dependency, trainer, or implemented
-experiment runner. The [29 experiment entries](research/experiment-matrix.csv)
-remain planned; task completion must not mark them as experimentally completed.
+The implementation now contains versioned contracts, read-only archive audit,
+exact-duplicate grouping and deterministic splits, explicit manifest loaders,
+the locked-route CLIP loader, baseline loop/checkpoint/inference structure,
+and a stricter CSV/ZIP validator. The [29 experiment entries](research/experiment-matrix.csv)
+remain planned; task completion must not mark them as experimentally
+completed. System Python remains dependency-free; an isolated CPU-only test
+environment was used for synthetic image/tensor regressions. The project Conda
+environment subsequently passed one bounded official-weight B03 CPU startup;
+target-machine CUDA and other real-weight recipe paths remain unverified here.
+
+Implemented handoff state:
+
+- T01–T06: grouped split v2 corrects the ratio objective; stale parent manifests
+  are rejected; collation and a resumable zero-worker stream are available.
+  The common loop restores optimizer/scheduler/RNG/cursor state, writes last
+  and dev-selected checkpoints, and rejects incompatible configurations.
+- T07–T08: GCE/SCE and W/P/I now execute inside the common loop. Synthetic
+  fixtures check method composition, frozen-reference gradients, bounded
+  scoring and Q/V-only updates. B03 also passed two real CLIP Q/V LoRA CPU
+  forward/backward/update steps on generated images; this is not a scored run.
+- N01–N05 code now includes official revision/hash checks, optimizer groups,
+  warm-up/cosine profiles, shared head initialization, sharded caches and CLI
+  orchestration. With user-installed dependencies in `.conda/aic-robust-clip`,
+  [45 CPU tests pass without skips](validation-20260916.md), including tensor/E2E
+  checks; a synthetic startup stopped after two samples/two optimizer updates.
+- Remaining acceptance work: verify bounded real-model startup on the separate
+  CUDA machine and record its
+  compatible installed GPU lock. Do not infer this evidence from implemented
+  code or historical synthetic checks. T09 is not closed.
 
 ## Authority and execution boundaries
 

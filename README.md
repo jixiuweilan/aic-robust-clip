@@ -9,14 +9,30 @@ Image Recognition Fine-Tuning with Noisy Labels**.
 - Source review date: **2026-09-15**
 
 The repository contains the competition brief, archived reference material,
-a [research design](docs/research-notes.md), a project layout, and a
-submission-format validator. The research design includes a literature
+a [research design](docs/research-notes.md), explicit manifest/audit/split
+contracts, frozen-CLIP baseline code, bounded startup training, inference, and
+a submission-format validator. The research design includes a literature
 synthesis, candidate methods, validation protocol, and 29 planned experiment
-entries. It does not yet contain a training or inference implementation.
+entries; those entries remain unrun until a separate training machine is
+available.
+
+The current setup, commands and acceptance ledger are in
+[`docs/handoff.md`](docs/handoff.md); implementation details and historical
+checks are in [`docs/runbook.md`](docs/runbook.md). Use the project Miniconda
+environment `.conda/aic-robust-clip`. All downloads are user-operated.
+
+For teammates cloning the private repository, start with
+[team setup and CUDA startup acceptance](docs/team-setup.md). Data, weights,
+environments and generated outputs are not included in Git.
 
 For implementation agents: [task plan and handoff](docs/implementation-plan.md)
 defines dependencies, deliverables, acceptance criteria and local execution
-limits. Start with T01; the first baseline milestone is T01–T06.
+limits. The reviewed data/trainer defects have regression coverage, including
+bounded synthetic resume and research-loss checks. This is not full T01–T08
+acceptance: formal profiles and CLI orchestration are implemented, and
+[45 CPU tests pass](docs/validation-20260916.md), including tensor/E2E checks.
+One bounded official-weight B03 CPU startup also passed (two updates, generated
+images only). CUDA checks on the separate training machine remain pending.
 
 ## Local execution limit
 
@@ -65,23 +81,28 @@ must then be the sole file at the root of a ZIP archive.
 Validate either the CSV or its final ZIP:
 
 ```bash
-PYTHONPATH=src python3 -m aic_robust_clip.submission outputs/pred_results.csv
-PYTHONPATH=src python3 -m aic_robust_clip.submission outputs/submission.zip
+PYTHONPATH=src .conda/aic-robust-clip/bin/python -m aic_robust_clip.submission outputs/pred_results.csv
+PYTHONPATH=src .conda/aic-robust-clip/bin/python -m aic_robust_clip.submission outputs/submission.zip
 ```
 
 Optionally compare filenames against an official test-image list containing
 one filename per line:
 
 ```bash
-PYTHONPATH=src python3 -m aic_robust_clip.submission \
+PYTHONPATH=src .conda/aic-robust-clip/bin/python -m aic_robust_clip.submission \
   outputs/submission.zip --expected-files data/test_filenames.txt
 ```
 
 Run the current test suite:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=src CUDA_VISIBLE_DEVICES='' .conda/aic-robust-clip/bin/python -m unittest discover -s tests -v
 ```
+
+Use `aic-audit-archive` and `aic-make-split` for explicit archive/manifest
+preparation. Full-data auditing, feature caching, and formal runs are
+separate-machine operations; this machine is limited to fixture tests and the
+resolved smoke bounds in `configs/baseline-smoke.json`.
 
 ## Data handling
 

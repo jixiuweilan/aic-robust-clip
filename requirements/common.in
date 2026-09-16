@@ -1,0 +1,7 @@
+# Candidate Python 3.11 environment; target-machine validation is PENDING.
+# User downloads only. Generate an exact installed lock with aic-doctor.
+transformers==4.57.6
+huggingface-hub==0.36.2
+numpy==2.2.6
+Pillow==11.3.0
+setuptools==78.1.0

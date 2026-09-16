@@ -1,0 +1,5 @@
+# Candidate GPU bootstrap pins, NOT a verified target-machine lock.
+# For the user's separate RTX 4060 / WSL2 / Python 3.11 environment only.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.7.0+cu126
+-r common.in

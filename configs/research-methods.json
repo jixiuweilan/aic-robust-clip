@@ -1,0 +1,9 @@
+{
+  "B01": {"model": "FrozenFeatureBaseline", "parameters": {}},
+  "B04": {"model": "OnlineFrozenBaseline", "parameters": {}},
+  "B03": {"model": "VisualLoRAModel", "parameters": {}},
+  "R01": {"model": "VisualLoRAModel", "parameters": {"objective": "gce", "gce_q": 0.7}},
+  "F100": {"model": "VisualLoRAModel", "parameters": {"weighting": true}},
+  "F010": {"model": "VisualLoRAModel", "parameters": {"lambda_preserve": 0.1}},
+  "F001": {"model": "VisualLoRAModel", "parameters": {"prior_tau": 1.0}}
+}

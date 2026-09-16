@@ -1,0 +1,16 @@
+{
+  "stage": "preliminary",
+  "execution_mode": "smoke",
+  "official_weight_id": "openai/clip-vit-base-patch32",
+  "official_weight_revision": "REQUIRED_IMMUTABLE_REVISION",
+  "seed": 17,
+  "batch_size": 1,
+  "max_samples": 8,
+  "max_updates": 2,
+  "max_eval_batches": 2,
+  "output_root": "outputs/startup-checks",
+  "parameters": {
+    "profile": "startup-check",
+    "formal_epochs": 20
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "recipe": "R01",
+  "stage": "preliminary",
+  "execution_mode": "formal",
+  "seed": 17,
+  "device": "cuda",
+  "machine_config": "../../machine-training.json",
+  "manifest": "../../outputs/preliminary/train-audit.json",
+  "split": "../../outputs/preliminary/split-v2.json",
+  "class_map": "../../outputs/preliminary/class-map.json",
+  "weights": "../../checkpoints/openai-clip-vit-b32",
+  "weight_revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+  "train_cache": "../../outputs/preliminary/cache-train",
+  "dev_cache": "../../outputs/preliminary/cache-dev",
+  "head": "../../outputs/preliminary/shared-head-seed17",
+  "output": "../../outputs/preliminary/runs/R01-seed17",
+  "batch_size": 1,
+  "effective_batch_size": 128,
+  "limits": {
+    "max_samples": 8,
+    "max_updates": 2,
+    "max_eval_batches": 2
+  },
+  "parameters": {}
+}

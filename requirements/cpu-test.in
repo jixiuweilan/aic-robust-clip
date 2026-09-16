@@ -1,0 +1,4 @@
+# User-operated dependency download; no CUDA packages in this environment.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.7.0+cpu
+-r common.in

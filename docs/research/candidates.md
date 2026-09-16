@@ -1,7 +1,9 @@
 # Candidate Methods
 
-Status: **proposed, unimplemented, unmeasured** (2026-09-15). This is a design
-specification. Source mechanisms and transfer limits are in
+Status: **proposed, partially implemented, unmeasured** (2026-09-16). The
+numeric-label baseline, visual Q/V-only LoRA structure, and GCE/W/P/I paths
+in the common trainer have bounded synthetic regression coverage; this remains a design
+specification for measured experiments. Source mechanisms and transfer limits are in
 [the literature synthesis](literature.md).
 
 ## Candidate map
