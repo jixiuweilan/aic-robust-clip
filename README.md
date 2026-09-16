@@ -14,6 +14,10 @@ submission-format validator. The research design includes a literature
 synthesis, candidate methods, validation protocol, and 29 planned experiment
 entries. It does not yet contain a training or inference implementation.
 
+For implementation agents: [task plan and handoff](docs/implementation-plan.md)
+defines dependencies, deliverables, acceptance criteria and local execution
+limits. Start with T01; the first baseline milestone is T01–T06.
+
 ## Local execution limit
 
 This machine is for code-correctness tests and short, explicitly step-limited

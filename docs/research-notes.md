@@ -21,10 +21,16 @@ engineering hypothesis about diagnostic value; it does not predict the winner.
 | [Experiment registry](research/experiment-matrix.csv) | Stable experiment IDs, controls, dependencies, seeds, and status |
 | [Source register](../references/research-sources.md) | Primary URLs and the evidence actually inspected |
 
-Official class names, current-stage data access, clean validation availability,
-hardware, and submission limits remain unknown. The registry is a design
-artifact, not an executable trainer configuration. Coefficients are proposed
-starting points, and no experimental results or measured speedups are claimed.
+Data update, 2026-09-16: `data/train.zip` and `data/test.zip` are present;
+archive counts match the preliminary stage. Full image integrity, provenance
+and duplicate checks remain pending. No class-name map or clean validation set
+was found inside these archives. Training-machine configuration and submission
+limits remain unknown. The registry is a design artifact, not an executable
+trainer configuration. Coefficients are proposed starting points, and no
+experimental results or measured speedups are claimed.
+
+The [implementation task plan](implementation-plan.md) assigns deliverables,
+dependencies and acceptance criteria for agents implementing this design.
 
 The current machine is restricted to code tests and bounded training startup
 checks due to insufficient GPU memory. Formal baseline runs and the experiment
