@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,10 @@ from .runtime import LOCAL_POLICY, RuntimeLimitError, RuntimePolicy
 
 # Irreversible identifier only; no hostname or machine-id is published.
 DEVELOPMENT_HOST = "d18bf1f8c8a9065559750bd412c310cf69f122a8e10be14035c8764462a1d077"
+
+# Match model names, not arbitrary numeric substrings. Both old desktop/laptop
+# 4060 bindings remain supported; a visible T4 is the newly approved target.
+APPROVED_TRAINING_GPU_PATTERN = re.compile(r"\b(?:RTX 4060|Tesla T4|NVIDIA T4)\b")
 
 
 def machine_fingerprint():
@@ -30,7 +35,7 @@ def machine_policy(path=None):
     host = machine_fingerprint()
     if value.get("role") != "training" or value.get("fingerprint") != host or host == DEVELOPMENT_HOST:
         raise RuntimeLimitError("training configuration is not bound to this permitted experiment host")
-    return RuntimePolicy(machine="bound-4060-experiment", allow_formal=True)
+    return RuntimePolicy(machine="bound-approved-experiment", allow_formal=True)
 
 
 def environment_report(root="."):
@@ -62,8 +67,9 @@ def bind_training(path):
     report = environment_report()
     if report["fingerprint"] == DEVELOPMENT_HOST:
         raise RuntimeLimitError("this development host cannot be enrolled for formal training")
-    if not report["cuda_available"] or "4060" not in report.get("gpu", {}).get("name", ""):
-        raise RuntimeLimitError("enrollment requires the separate CUDA-visible RTX 4060")
+    gpu_name = report.get("gpu", {}).get("name", "")
+    if not report["cuda_available"] or not APPROVED_TRAINING_GPU_PATTERN.search(gpu_name):
+        raise RuntimeLimitError("enrollment requires an approved CUDA training GPU (RTX 4060 or Tesla T4)")
     if Path(path).exists():
         raise FileExistsError(path)
     write_json(path, {"role": "training", "fingerprint": report["fingerprint"], "preflight": report})

@@ -30,7 +30,8 @@ def doctor_main(argv=None):
     parser = argparse.ArgumentParser(description="Inspect environment/inputs without training or implicit setup")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--bind-training", type=Path, help="explicitly enroll the separate CUDA-visible 4060 only")
+    parser.add_argument("--bind-training", type=Path,
+                        help="explicitly enroll a separate CUDA-visible RTX 4060 or Tesla T4 training host")
     parser.add_argument("--record-lock", type=Path, help="record installed dependencies, not GPU-validation success")
     args = parser.parse_args(argv)
     def action():

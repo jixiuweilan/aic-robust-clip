@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from ..contracts import PARTITIONS, ContractError, SampleRecord, SplitRecord, sha256_json
+from .relocation import resolve_archive
 
 
 class DatasetError(ValueError):
@@ -26,7 +27,7 @@ class SampleItem:
 
 
 def _read_record_bytes(record: SampleRecord) -> bytes:
-    archive_path = Path(record.archive_path)
+    archive_path = resolve_archive(Path(record.archive_path), archive_identity=record.archive_identity)
     if archive_path.is_dir():
         source = archive_path / record.member_path
         if not source.is_file():
@@ -161,7 +162,7 @@ class ManifestDataset:
         # Opening one handle per archive per worker avoids sharing a ZipFile
         # object across DataLoader worker processes.
         self._ensure_process()
-        archive_path = Path(record.archive_path)
+        archive_path = resolve_archive(Path(record.archive_path), archive_identity=record.archive_identity)
         if archive_path.is_dir():
             return _read_record_bytes(record)
         key = str(archive_path)
