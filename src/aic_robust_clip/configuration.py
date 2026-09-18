@@ -11,12 +11,13 @@ from .environment import machine_policy
 from .models.provision import inspect_weights
 from .runtime import resolve_run_config
 from .training.baseline import TrainConfig
+from .performance import PerformanceConfig
 
 RECIPES = {"B01": {}, "B04": {}, "B03": {}, "R01": {"objective": "gce", "gce_q": .7},
            "F100": {"weighting": True}, "F010": {"lambda_preserve": .1}, "F001": {"prior_tau": 1.}}
 PATHS = {"manifest", "split", "class_map", "weights", "train_cache", "dev_cache", "head", "output", "machine_config"}
 FIELDS = PATHS | {"schema_version", "recipe", "stage", "execution_mode", "seed", "device", "weight_revision",
-                  "batch_size", "effective_batch_size", "limits", "parameters"}
+                  "batch_size", "effective_batch_size", "limits", "parameters", "performance"}
 
 
 @dataclass
@@ -36,6 +37,10 @@ class PreparedRun:
                 "weight_identity": self.weights, "preprocessing_digest": self.preprocessing_digest,
                 "class_count": len(self.class_map.id_to_index), "split_counts": self.split.counts()}
 
+    @property
+    def performance(self):
+        return PerformanceConfig.from_config(self.config)
+
 
 def load_config(path):
     path = Path(path).resolve()
@@ -53,6 +58,7 @@ def prepare(path):
     """Permission first; never generates artifacts, reads pixels or loads a model."""
     from .data.transforms import ClipTransform
     config = load_config(path)
+    PerformanceConfig.from_config(config)  # validate before any artifact/image access
     limits = config.get("limits", {})
     base = RunConfig(stage=config["stage"], execution_mode=config.get("execution_mode", "smoke"),
         seed=config.get("seed", 17), batch_size=config.get("batch_size", 1),

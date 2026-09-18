@@ -18,6 +18,11 @@ class DatasetError(ValueError):
     """Raised when a loader would violate stage or data-role boundaries."""
 
 
+def identity_transform(value):
+    """Pickle-safe default for spawn workers."""
+    return value
+
+
 @dataclass(frozen=True)
 class SampleItem:
     image: Any
@@ -92,7 +97,7 @@ class ManifestDataset:
         self.partition = partition
         self.purpose = purpose
         self.class_to_index = dict(class_to_index or {})
-        self.transform = transform or (lambda value: value)
+        self.transform = transform or identity_transform
         self._zip_handles: dict[str, zipfile.ZipFile] = {}
         self._pid = os.getpid()
         self.epoch = 0

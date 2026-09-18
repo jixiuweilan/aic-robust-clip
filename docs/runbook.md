@@ -2,8 +2,9 @@
 
 The N01–N05 command workflow is implemented. See [the current handoff](handoff.md)
 for Miniconda setup, user-operated downloads, exact commands and remaining
-validation gates. Formal work belongs on the separate RTX 4060 / Windows +
-WSL2 machine. A passing fixture/startup check is not a score or a completed
+validation gates. Formal work belongs on a separately enrolled RTX 4060 or
+Tesla T4 machine. See [FP32 performance rollout](t4-performance.md) for opt-in
+batching, safe prefetch and bounded remote measurements. A passing fixture/startup check is not a score or a completed
 experiment. Official-weight B03 CPU startup passed; target-machine CUDA startup
 remains pending.
 
@@ -120,9 +121,11 @@ complete formal experiment profiles and have no measured run.
 
 For ordinary PyTorch DataLoader use `collate_fn=collate_samples` from
 `aic_robust_clip.data.loading`; transforms must decode bytes and return tensors.
-For checkpoint/resume use `StatefulBatchLoader` instead. It has no workers or
-prefetch and persists the exact next-sample cursor and deterministic epoch
-order. Construct it with `max_samples=run.max_samples` in smoke mode. Local
+For checkpoint/resume use `StatefulBatchLoader` instead. Its default has no workers;
+formal configurations can opt into ordered spawn prefetch while checkpoints
+still persist only the delivered-sample cursor and deterministic epoch order.
+Close streams explicitly or use their context manager. Construct them with
+`max_samples=run.max_samples` in smoke mode, where prefetch is forbidden. Local
 PyTorch loaders must use `num_workers=0` and the resolved small batch size.
 
 Construct `ManifestDataset.from_split` using the **complete parent manifest**
@@ -188,6 +191,10 @@ Formal feature caching, head initialization, epochs, validation selection, and
 the research matrix are not run in this checkout.
 
 ## Prediction and packaging
+
+Before preparing an official leaderboard submission, satisfy the
+[internal leaf-only eligibility gate](research/submission-gate.md). A baseline,
+screening winner, or passing CSV validator alone is not eligible.
 
 After recipe selection on the separate machine, load one checkpoint, one class
 map, and one preprocessing flow. Predict only from the explicit test manifest;

@@ -1,8 +1,4 @@
-"""Tensor collation and a resumable, zero-worker manifest batch stream.
-
-Resume deliberately uses this stream, not DataLoader prefetch/replay: its
-cursor advances only for delivered samples and iterator creation draws no RNG.
-"""
+"""Ordered batches with a delivered-only cursor and optional spawn prefetch."""
 
 from __future__ import annotations
 
@@ -12,6 +8,47 @@ from typing import Any, Sequence
 from ..contracts import sha256_json
 from ..runtime import stable_seeded_order
 from .dataset import DatasetError, SampleItem
+
+
+class _AddressedDataset:
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self._failed = False
+
+    def __getitem__(self, address):
+        if self._failed:
+            raise DatasetError("worker stopped after an earlier read failure; no retry")
+        epoch, index = address
+        try:
+            if hasattr(self.dataset, "set_epoch"):
+                self.dataset.set_epoch(epoch)
+            return self.dataset[index]
+        except Exception:
+            self._failed = True
+            if hasattr(self.dataset, "close"):
+                self.dataset.close()
+            raise
+
+    def __len__(self):
+        return len(self.dataset)
+
+
+class _RemainingSampler:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def __iter__(self):
+        # Snapshot BEFORE prefetch starts; delivered position may advance later.
+        stream = self.stream
+        return iter([(stream.epoch, index) for index in stream.order[stream.position:]])
+
+    def __len__(self):
+        return len(self.stream.order) - self.stream.position
+
+
+def _worker_init(_worker_id):
+    import torch
+    torch.set_num_threads(1)
 
 
 def collate_samples(items: Sequence[SampleItem]) -> dict[str, Any]:
@@ -35,16 +72,24 @@ def collate_samples(items: Sequence[SampleItem]) -> dict[str, Any]:
 class StatefulBatchLoader:
     """Map-style dataset batching with exact deterministic cursor restoration.
 
-    Use ``collate_samples`` with a standard DataLoader for non-resumable use.
-    This implementation intentionally has no workers/prefetch. In smoke mode
-    callers MUST set max_samples before any dataset access.
+    The optional DataLoader never owns the checkpoint cursor. In smoke mode
+    callers MUST set max_samples and use zero workers before dataset access.
     """
 
     def __init__(self, dataset: Any, *, batch_size: int = 1, seed: int = 17,
                  shuffle: bool = True, max_samples: int | None = None,
-                 sample_ids: Sequence[str] | None = None) -> None:
+                 sample_ids: Sequence[str] | None = None, num_workers: int = 0,
+                 prefetch_factor: int = 2, pin_memory: bool = False) -> None:
         if batch_size <= 0 or (max_samples is not None and max_samples <= 0):
             raise DatasetError("batch size and sample bound must be positive")
+        if (type(num_workers) is not int or not 0 <= num_workers <= 16
+                or type(prefetch_factor) is not int or not 1 <= prefetch_factor <= 4
+                or type(pin_memory) is not bool):
+            raise DatasetError("invalid loader performance settings")
+        if max_samples is not None and (num_workers or pin_memory):
+            raise DatasetError("bounded smoke streams cannot prefetch or pin memory")
+        self.num_workers, self.prefetch_factor, self.pin_memory = num_workers, prefetch_factor, pin_memory
+        self._parallel = self._iterator = None
         self.dataset = dataset
         records = getattr(dataset, "records", None)
         ids = list(sample_ids) if sample_ids is not None else [record.sample_id for record in records or ()]
@@ -67,6 +112,9 @@ class StatefulBatchLoader:
     def reset(self, epoch: int) -> None:
         if epoch < 0:
             raise DatasetError("epoch must be non-negative")
+        if self._iterator is not None and not self.exhausted:
+            self.close()  # discard outstanding prefetch on partial reset/restore
+        self._iterator = None
         self.epoch, self.position = epoch, 0
         self._set_order()
         if hasattr(self.dataset, "set_epoch"):
@@ -82,9 +130,72 @@ class StatefulBatchLoader:
         if self.exhausted:
             raise StopIteration
         stop = min(self.position + self.batch_size, len(self.order))
-        batch = collate_samples([self.dataset[index] for index in self.order[self.position:stop]])
+        try:
+            if self.num_workers:
+                if self._parallel is None:
+                    import torch
+                    self._parallel = torch.utils.data.DataLoader(
+                        _AddressedDataset(self.dataset), batch_size=self.batch_size,
+                        sampler=_RemainingSampler(self), collate_fn=collate_samples,
+                        num_workers=self.num_workers, prefetch_factor=self.prefetch_factor,
+                        pin_memory=self.pin_memory, persistent_workers=True,
+                        multiprocessing_context="spawn", worker_init_fn=_worker_init,
+                        generator=torch.Generator().manual_seed(self.seed), timeout=300)
+                if self._iterator is None:
+                    self._iterator = iter(self._parallel)
+                batch = next(self._iterator)
+            else:
+                batch = collate_samples([self.dataset[index] for index in self.order[self.position:stop]])
+                if self.pin_memory:
+                    batch = {key: value.pin_memory() if hasattr(value, "pin_memory") else value
+                             for key, value in batch.items()}
+            if batch["sample_id"] != [self.ids[index] for index in self.order[self.position:stop]]:
+                raise DatasetError("prefetch returned an unexpected sample order")
+        except BaseException as exc:
+            try:
+                self.close()
+            except Exception as cleanup_error:
+                if hasattr(exc, "add_note"):
+                    exc.add_note(f"prefetch shutdown also failed: {cleanup_error}")
+            raise
         self.position = stop
         return batch
+
+    def close(self) -> None:
+        iterator = self._iterator or getattr(self._parallel, "_iterator", None)
+        workers = list(getattr(iterator, "_workers", ()))
+        try:
+            if iterator is not None:
+                # PyTorch 2.x has no public iterator close; isolate lifecycle use.
+                iterator._shutdown_workers()
+        finally:
+            self._iterator = self._parallel = None
+            # Also reap workers terminated by PyTorch's exceptional shutdown.
+            for worker in workers:
+                if worker.is_alive():
+                    worker.terminate()
+                worker.join(timeout=5)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=5)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, exc, _traceback):
+        try:
+            self.close()
+        except Exception as cleanup_error:
+            if exc is None:
+                raise
+            if hasattr(exc, "add_note"):
+                exc.add_note(f"prefetch shutdown also failed: {cleanup_error}")
+
+    def __del__(self):  # pragma: no cover - explicit close owns normal cleanup
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @property
     def exhausted(self) -> bool:

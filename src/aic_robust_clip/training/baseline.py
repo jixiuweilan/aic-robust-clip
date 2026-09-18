@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from itertools import islice
+from itertools import count
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 import math
+import time
 from typing import Any, Iterable, Mapping
 
 from ..contracts import CheckpointMetadata, RunConfig, sha256_json, write_json
@@ -15,6 +16,7 @@ from ..metrics import ClassificationMetrics, evaluate_classification
 from ..models.clip import ClipDependencyError, torch, nn
 from ..models.classifier import LinearClassifier
 from ..runtime import LOCAL_POLICY, RuntimePolicy, assert_bounded_startup, resolve_run_config, seed_everything
+from ..performance import transfer_tensor
 from .checkpoint import load_checkpoint, save_checkpoint
 from .objectives import combined_wpi_loss, gce_loss, sce_loss, preservation_loss
 from .optimization import optimizer_groups, warmup_cosine_factor, selection_key
@@ -180,7 +182,7 @@ def _prepare_labels(labels: Any, device: Any) -> Any:
     if torch is None:
         raise ClipDependencyError("torch is required for training")
     if isinstance(labels, torch.Tensor):
-        result = labels.to(device=device, dtype=torch.long)
+        result = transfer_tensor(labels, device, dtype=torch.long)
     else:
         result = torch.as_tensor(labels, device=device, dtype=torch.long)
     return result.reshape(-1)
@@ -188,7 +190,7 @@ def _prepare_labels(labels: Any, device: Any) -> Any:
 
 def _prepare_images(images: Any, device: Any) -> Any:
     if torch is not None and isinstance(images, torch.Tensor):
-        return images.to(device)
+        return transfer_tensor(images, device)
     raise TrainingError("training batches must provide torch tensors after preprocessing")
 
 
@@ -200,6 +202,7 @@ def evaluate_loader(
     training_counts: Mapping[int, int] | None = None,
     max_batches: int | None = None,
     device: Any = None,
+    observer: Any = None,
 ) -> tuple[ClassificationMetrics, list[int], list[int]]:
     if torch is None:
         raise ClipDependencyError("torch is required for evaluation")
@@ -210,14 +213,29 @@ def evaluate_loader(
     was_training = model.training
     model.eval()
     with torch.no_grad():
-        for batch in islice(loader, max_batches):
+        iterator = iter(loader)
+        for _ in (range(max_batches) if max_batches is not None else count()):
+            if observer is not None:
+                observer.begin_step()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
+            if observer is not None:
+                observer.data_ready()
             images, batch_labels = _unpack_batch(batch)
             images = _prepare_images(images, device)
             batch_labels_tensor = _prepare_labels(batch_labels, device)
+            if observer is not None:
+                observer.cuda_mark("transfer")
             logits = model(images)
+            if observer is not None:
+                observer.cuda_mark("compute")
             batch_predictions = logits.argmax(dim=-1)
             labels.extend(int(value) for value in batch_labels_tensor.cpu().tolist())
             predictions.extend(int(value) for value in batch_predictions.cpu().tolist())
+            if observer is not None:
+                observer.end_step(len(batch_labels_tensor))
     if was_training:
         model.train()
     if not labels:
@@ -243,11 +261,12 @@ def train_baseline(
     checkpoint_metadata: CheckpointMetadata | None = None,
     resume_from: Path | str | None = None,
     stop_after_updates: int | None = None,
+    observer: Any = None,
 ) -> BaselineResult:
     """Common baseline/research loop; resume only at committed update boundaries.
 
     Smoke limits are cumulative across resume, never renewed by another call.
-    A checkpointed stream must be StatefulBatchLoader (no prefetch or replay).
+    A checkpointed stream must be StatefulBatchLoader (delivered-only cursor).
     ``stop_after_updates`` pauses at an absolute update count without turning
     the pause into an epoch boundary or flushing an incomplete accumulation.
     """
@@ -396,6 +415,7 @@ def train_baseline(
     def persist(name: str) -> None:
         if checkpoint_dir is None:
             return
+        persist_started = time.monotonic()
         metadata = replace(checkpoint_metadata, progress={
             "epoch": epoch, "updates": result.updates, "samples": result.samples,
             "best_score": best_score, "reference_samples": result.reference_samples,
@@ -414,6 +434,8 @@ def train_baseline(
         path = Path(checkpoint_dir) / f"{name}.pt"
         result.checkpoint_hashes[name] = save_checkpoint(path, model=model, metadata=metadata,
             optimizer=optimizer, scheduler=scheduler, sampler_state=train_loader.state_dict(), module_state=modules)
+        if observer is not None:
+            observer.checkpoint_seconds += time.monotonic() - persist_started
 
     optimizer.zero_grad(set_to_none=True)
     paused = False
@@ -434,6 +456,8 @@ def train_baseline(
             # Buffer only CPU inputs for one effective batch, never graphs.
             # Knowing its exact size/weight mass makes incomplete and weighted
             # accumulation equivalent to the corresponding unsplit objective.
+            if observer is not None:
+                observer.begin_step()
             group = []
             group_samples = 0
             for _ in range(config.accumulation_steps):
@@ -462,9 +486,14 @@ def train_baseline(
                 group_samples += count
             if not group:
                 break
+            if observer is not None:
+                observer.data_ready()
             mass = sum(sum(weights) if weights is not None else count for _, _, count, weights in group)
+            detached_losses = []
             for images, labels, count, weights in group:
                 images, labels = _prepare_images(images, device), _prepare_labels(labels, device)
+                if observer is not None:
+                    observer.cuda_mark("transfer")
                 features = frozen_features = None
                 if config.lambda_preserve:
                     logits, features = model.forward_with_features(images)
@@ -486,15 +515,22 @@ def train_baseline(
                 if not torch.isfinite(contribution):
                     raise TrainingError("nonfinite loss; run stopped without retry")
                 contribution.backward()
-                result.losses.append(float(contribution.detach().cpu()))
+                detached_losses.append(contribution.detach())
                 result.samples += count
-            if any(parameter.grad is not None and not torch.isfinite(parameter.grad).all() for parameter in trainable):
+                if observer is not None:
+                    observer.cuda_mark("compute")
+            finite_gradients = [torch.isfinite(parameter.grad).all() for parameter in trainable if parameter.grad is not None]
+            if finite_gradients and not torch.stack(finite_gradients).all():
                 raise TrainingError("nonfinite gradient; run stopped without retry")
+            result.losses.extend(torch.stack(detached_losses).cpu().tolist())
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             result.updates += 1
             result.optimizer_updated = True
+            if observer is not None:
+                observer.cuda_mark("optimizer")
+                observer.end_step(group_samples)
             if stop_after_updates is not None and result.updates >= stop_after_updates:
                 paused = True
                 break

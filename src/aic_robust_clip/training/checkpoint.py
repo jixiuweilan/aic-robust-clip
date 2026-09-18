@@ -105,6 +105,8 @@ def load_checkpoint(
     metadata_value = dict(payload.get("metadata", {}))
     metadata_value.pop("schema_version", None)
     metadata = CheckpointMetadata(**metadata_value)
+    if metadata.model_family == "BENCHMARK":
+        raise ContractError("benchmark checkpoints cannot be loaded for training or inference")
     if expected_configuration_digest is not None and metadata.configuration_digest != expected_configuration_digest:
         raise ContractError("resume configuration digest mismatch")
     try:

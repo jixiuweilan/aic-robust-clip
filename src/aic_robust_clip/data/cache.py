@@ -6,6 +6,7 @@ from pathlib import Path
 from ..contracts import read_json, sha256_json, write_json
 from ..models.clip import torch
 from ..models.provision import file_sha256
+from ..performance import transfer_tensor
 from .dataset import DatasetError, SampleItem
 from .loading import StatefulBatchLoader
 
@@ -17,7 +18,36 @@ def cache_key(run, weight_digest, preprocessing_digest, partition):
             "preprocessing_digest": preprocessing_digest, "partition": partition}
 
 
-def generate_cache(dataset, encoder, directory, *, key, device, batch_size=1, shard_rows=1024):
+def feature_batches(loader, encoder, *, device, observer=None):
+    """Production fixed-view extraction, also used by the bounded benchmark."""
+    iterator = iter(loader)
+    with torch.no_grad():
+        while True:
+            if observer is not None:
+                observer.begin_step()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
+            if observer is not None:
+                observer.data_ready()
+            images = transfer_tensor(batch["image"], device)
+            if observer is not None:
+                observer.cuda_mark("transfer")
+            features = encoder(images)
+            if observer is not None:
+                observer.cuda_mark("compute")
+            features = features.detach().cpu().float()
+            if features.ndim != 2 or not torch.isfinite(features).all():
+                raise DatasetError("invalid encoder features")
+            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            if observer is not None:
+                observer.end_step(len(batch["sample_id"]))
+            yield batch, features
+
+
+def generate_cache(dataset, encoder, directory, *, key, device, batch_size=1, shard_rows=1024,
+                   num_workers=0, prefetch_factor=2, pin_memory=False):
     if dataset.role != "train" or dataset.partition not in {"train", "dev"} or key["partition"] != dataset.partition:
         raise DatasetError("feature caches accept train/dev only, never confirm/test")
     if getattr(dataset.transform, "online", False):
@@ -28,7 +58,8 @@ def generate_cache(dataset, encoder, directory, *, key, device, batch_size=1, sh
     root.mkdir(parents=True, exist_ok=False)
     encoder.to(device).eval()
     loader = StatefulBatchLoader(dataset, batch_size=batch_size, shuffle=False,
-                                 max_samples=8 if key["execution_mode"] == "smoke" else None)
+                                 max_samples=8 if key["execution_mode"] == "smoke" else None,
+                                 num_workers=num_workers, prefetch_factor=prefetch_factor, pin_memory=pin_memory)
     shards, rows, buffer = [], [], []
     dimension = None
 
@@ -41,12 +72,8 @@ def generate_cache(dataset, encoder, directory, *, key, device, batch_size=1, sh
         shards.append({"file": name, "sha256": file_sha256(root / name), "rows": len(buffer)})
         buffer.clear()
 
-    with torch.no_grad():
-        for batch in loader:
-            features = encoder(batch["image"].to(device)).detach().cpu().float()
-            if features.ndim != 2 or not torch.isfinite(features).all():
-                raise DatasetError("invalid encoder features")
-            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    with loader:
+        for batch, features in feature_batches(loader, encoder, device=device):
             dimension = features.shape[1]
             for sample_id, feature in zip(batch["sample_id"], features):
                 rows.append({"sample_id": sample_id, "shard": len(shards), "offset": len(buffer)})
@@ -80,6 +107,9 @@ class CachedDataset:
 
     def __len__(self):
         return len(self.rows)
+
+    def __getstate__(self):
+        return {**self.__dict__, "_mapped": {}}
 
     def __getitem__(self, index):
         row = self.rows[index]

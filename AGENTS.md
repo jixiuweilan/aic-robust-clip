@@ -29,6 +29,16 @@ Recognition Fine-Tuning with Noisy Labels."
 - Do not commit competition data, checkpoints, credentials, or generated
   submissions.
 
+## Internal leaderboard submission gate
+
+User rule established on 2026-09-18: only a fully optimized leaf of the declared
+experiment tree is eligible for organizer leaderboard submission. Baseline
+roots (including B03/B04), engineering profiles, and intermediate screening
+results are not eligible. Completing baseline training or validating a CSV
+does not establish submission eligibility. Follow
+`docs/research/submission-gate.md` and retain the leaf's selection evidence.
+This is an internal project rule, not an organizer requirement.
+
 ## Local machine execution limit
 
 User rule established on 2026-09-15: this machine has insufficient GPU memory

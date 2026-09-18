@@ -6,6 +6,7 @@ initializer. Each prerequisite must already exist and match the resolved run.
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -38,9 +39,14 @@ def dataset_for(ctx, partition, processor=None, *, online=False, purpose=None):
     return dataset
 
 
-def stream(ctx, dataset, *, shuffle=True):
-    return StatefulBatchLoader(dataset, batch_size=ctx.run.batch_size, seed=ctx.run.seed, shuffle=shuffle,
-        max_samples=ctx.run.max_samples if ctx.run.execution_mode == "smoke" else None)
+def stream(ctx, dataset, *, shuffle=True, batch_size=None):
+    perf = ctx.performance
+    if batch_size is None:
+        batch_size = ctx.run.batch_size if dataset.purpose == "train" else perf.eval_batch_size
+    return StatefulBatchLoader(dataset, batch_size=batch_size, seed=ctx.run.seed, shuffle=shuffle,
+        max_samples=ctx.run.max_samples if ctx.run.execution_mode == "smoke" else None,
+        num_workers=0 if isinstance(dataset, CachedDataset) else perf.num_workers,
+        prefetch_factor=perf.prefetch_factor, pin_memory=perf.pin_memory)
 
 
 def cache_for(ctx, partition, dataset):
@@ -112,7 +118,9 @@ def cache_command(config_path, partition):
     try:
         return generate_cache(dataset, bundle.encoder, directory,
             key=cache_key(ctx.run, ctx.weights["digest"], ctx.preprocessing_digest, partition),
-            device=ctx.config.get("device", "cpu"), batch_size=ctx.run.batch_size)
+            device=ctx.config.get("device", "cpu"), batch_size=ctx.performance.cache_batch_size,
+            num_workers=ctx.performance.num_workers, prefetch_factor=ctx.performance.prefetch_factor,
+            pin_memory=ctx.performance.pin_memory)
     finally:
         dataset.close()
 
@@ -124,15 +132,23 @@ def init_head_command(config_path):
     dataset = cache_for(ctx, "train", dataset_for(ctx, "train"))
     root = reserve_output(ctx.config["head"])
     seed_everything(ctx.run.seed)
-    run = replace(ctx.run, parameters={"formal_epochs": 3, "profile": "HEAD3", "scheduler": "warmup_cosine",
-        "accumulation_steps": ctx.train.accumulation_steps}, output_root=str(root))
+    head_batch = ctx.performance.head_batch_size
+    accumulation = (ctx.config.get("effective_batch_size", 128) // head_batch
+                    if ctx.run.execution_mode == "formal" else 1)
+    run = replace(ctx.run, batch_size=head_batch,
+        parameters={"formal_epochs": 3, "profile": "HEAD3", "scheduler": "warmup_cosine",
+        "accumulation_steps": accumulation}, output_root=str(root))
     config = TrainConfig.from_run(run)
     model = FrozenFeatureBaseline(dataset.feature_dim, len(ctx.class_map.id_to_index))
     meta = metadata_for(ctx, config, initialization=sha256_json({"random_head_seed": ctx.run.seed}), family="HEAD3")
-    write_json(root / "resolved.json", {"run": run.to_dict(), "identity": head_identity(ctx)})
+    resolved = {"run": run.to_dict(), "identity": head_identity(ctx)}
+    if "performance" in ctx.config:
+        resolved["performance"] = ctx.config["performance"]
+    write_json(root / "resolved.json", resolved)
     try:
-        result = train_baseline(model, stream(ctx, dataset), config=config, class_count=len(ctx.class_map.id_to_index),
-            device=ctx.config.get("device", "cpu"), policy=ctx.policy, checkpoint_dir=root, checkpoint_metadata=meta)
+        with stream(ctx, dataset, batch_size=head_batch) as loader:
+            result = train_baseline(model, loader, config=config, class_count=len(ctx.class_map.id_to_index),
+                device=ctx.config.get("device", "cpu"), policy=ctx.policy, checkpoint_dir=root, checkpoint_metadata=meta)
         torch.save({name: tensor.cpu() for name, tensor in model.classifier.state_dict().items()}, root / "head.pt")
         descriptor = {"identity": head_identity(ctx), "sha256": file_sha256(root / "head.pt"), "result": result.to_dict()}
         write_json(root / "head.json", descriptor)
@@ -187,12 +203,16 @@ def train_command(config_path, *, resume=None, stop_after_updates=None):
     started = time.monotonic()
     try:
         labels = {record.sample_id: train.class_to_index[record.class_id] for record in train.records}
-        result = train_baseline(model, stream(ctx, train), config=ctx.train,
-            class_count=len(ctx.class_map.id_to_index), dev_loader=stream(ctx, dev, shuffle=False),
-            training_counts=dict(Counter(labels.values())), device=device, policy=ctx.policy,
-            training_labels=labels, scoring_loader=stream(ctx, scoring, shuffle=False) if scoring else None,
-            reference_encoder=reference, checkpoint_dir=root, checkpoint_metadata=meta,
-            resume_from=resume, stop_after_updates=stop_after_updates)
+        with ExitStack() as streams:
+            train_stream = streams.enter_context(stream(ctx, train))
+            dev_stream = streams.enter_context(stream(ctx, dev, shuffle=False))
+            scoring_stream = streams.enter_context(stream(ctx, scoring, shuffle=False)) if scoring else None
+            result = train_baseline(model, train_stream, config=ctx.train,
+                class_count=len(ctx.class_map.id_to_index), dev_loader=dev_stream,
+                training_counts=dict(Counter(labels.values())), device=device, policy=ctx.policy,
+                training_labels=labels, scoring_loader=scoring_stream,
+                reference_encoder=reference, checkpoint_dir=root, checkpoint_metadata=meta,
+                resume_from=resume, stop_after_updates=stop_after_updates)
         report = {**result.to_dict(), "status": "paused" if stop_after_updates is not None else "complete",
             "evidence": "startup_only" if ctx.run.execution_mode == "smoke" else "formal",
             "label_quality": "noisy_proxy", "elapsed_seconds": time.monotonic() - started,
@@ -248,6 +268,8 @@ def check_selection(ctx, checkpoint, selection):
 def lock_selection_command(config_path, checkpoint, output):
     ctx = prepare(config_path)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if payload["metadata"].get("model_family") == "BENCHMARK":
+        raise ValueError("benchmark checkpoints cannot be selected")
     initial = sha256_json({"random_head_seed": ctx.run.seed}) if ctx.config["recipe"] == "B01" else load_head(ctx)[1]
     metadata_value = dict(payload["metadata"])
     metadata_value.pop("schema_version", None)
@@ -279,10 +301,11 @@ def evaluate_command(config_path, checkpoint, partition, output, *, selection=No
     train_records = dataset_for(ctx, "train").records
     counts = Counter(ctx.class_map.index_for(record.class_id) for record in train_records)
     try:
-        metrics, predictions, labels = evaluate_loader(model, stream(ctx, dataset, shuffle=False),
-            total_classes=len(ctx.class_map.id_to_index), training_counts=counts,
-            max_batches=ctx.run.max_eval_batches if ctx.run.execution_mode == "smoke" else None,
-            device=ctx.config.get("device", "cpu"))
+        with stream(ctx, dataset, shuffle=False) as loader:
+            metrics, predictions, labels = evaluate_loader(model, loader,
+                total_classes=len(ctx.class_map.id_to_index), training_counts=counts,
+                max_batches=ctx.run.max_eval_batches if ctx.run.execution_mode == "smoke" else None,
+                device=ctx.config.get("device", "cpu"))
         result = {"partition": partition, "label_quality": "noisy_proxy", "metrics": metrics.to_dict(),
             "checkpoint_sha256": file_sha256(checkpoint), "predictions": [
                 {"sample_id": record.sample_id, "label": label, "prediction": prediction}

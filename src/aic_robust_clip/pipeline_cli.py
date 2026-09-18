@@ -103,6 +103,18 @@ def train_main(argv=None):
     return _execute(lambda: train_command(args.config, resume=args.resume, stop_after_updates=args.stop_after_updates))
 
 
+def benchmark_main(argv=None):
+    parser = _parser("Bounded remote CUDA benchmark only; no automatic continuation or model selection")
+    parser.add_argument("--phase", choices=("cache", "train", "eval"), required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--warmup-steps", type=int, default=2)
+    parser.add_argument("--measure-steps", type=int, default=10)
+    args = parser.parse_args(argv)
+    from .benchmark import benchmark_command
+    return _execute(lambda: benchmark_command(args.config, args.phase, args.output,
+        warmup_steps=args.warmup_steps, measure_steps=args.measure_steps))
+
+
 def evaluate_main(argv=None):
     parser = _parser("Read-only dev or explicitly locked confirm evaluation")
     parser.add_argument("--checkpoint", type=Path, required=True)
