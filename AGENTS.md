@@ -62,6 +62,10 @@ bounded checks that training can start successfully.
 
 ## Engineering expectations
 
+- 面向组员的任务说明、操作步骤和交接说明一律使用简体中文，要求清晰、简洁、完整。
+  命令、路径、配置键和必要技术名称保留原样；明确任务目标、前置条件、执行步骤、
+  验收标准、失败停止条件和回传材料。此规则优先于通用的技术文档英文约定。
+
 - All downloads are delegated to the user (rule established 2026-09-16).
   Agents must not initiate package, model-weight, or dataset downloads.
   Prepare explicit user-run commands or offline installation instructions;
