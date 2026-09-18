@@ -35,7 +35,8 @@ def prepare_candidates(config_path, output_dir):
                 config["batch_size"] = micro
                 config.setdefault("parameters", {}).pop("accumulation_steps", None)
                 config["performance"] = {"cache_batch_size": 64, "eval_batch_size": 64,
-                    "head_batch_size": 128, "num_workers": workers, "prefetch_factor": 2, "pin_memory": True}
+                    "head_batch_size": 128, "num_workers": workers, "eval_num_workers": 0,
+                    "prefetch_factor": 2, "pin_memory": True}
             PerformanceConfig.from_config(config)
             path = root / f"{recipe}-{name}.json"
             write_json(path, config)

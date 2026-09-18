@@ -87,18 +87,24 @@ class PerformanceTests(unittest.TestCase):
             "cache_batch_size": 64, "eval_batch_size": 64, "head_batch_size": 128,
             "num_workers": 4, "pin_memory": True}})
         self.assertEqual(perf.head_batch_size, 128)
+        self.assertEqual(perf.eval_num_workers, 4)  # legacy global setting
+        isolated = PerformanceConfig.from_config({**original, "performance": {
+            "num_workers": 4, "eval_num_workers": 0}})
+        self.assertEqual((isolated.num_workers, isolated.eval_num_workers), (4, 0))
 
     def test_invalid_settings_and_smoke_reject_before_artifacts(self):
         cases = [{"unknown": 1}, {"num_workers": -1}, {"num_workers": True}, {"num_workers": 17},
                  {"prefetch_factor": 0}, {"prefetch_factor": 5}, {"pin_memory": 1},
-                 {"head_batch_size": 3}, {"cache_batch_size": 1.5}, {"eval_batch_size": False}]
+                 {"head_batch_size": 3}, {"cache_batch_size": 1.5}, {"eval_batch_size": False},
+                 {"eval_num_workers": -1}, {"eval_num_workers": True}, {"eval_num_workers": 17},
+                 {"eval_num_workers": None}]
         for value in cases:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 PerformanceConfig.from_config({"execution_mode": "formal", "performance": value})
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             for perf in ({"num_workers": 1}, {"cache_batch_size": 2}, {"eval_batch_size": 2},
-                         {"head_batch_size": 2}, {"pin_memory": True}):
+                         {"head_batch_size": 2}, {"pin_memory": True}, {"eval_num_workers": 1}):
                 write_json(path, {"schema_version": 2, "recipe": "B03", "stage": "preliminary", "performance": perf})
                 with patch("aic_robust_clip.configuration.load_manifest", side_effect=AssertionError("artifact read")):
                     with self.assertRaisesRegex(ValueError, "smoke"):
@@ -310,6 +316,8 @@ class PerformanceTests(unittest.TestCase):
             self.assertEqual(fast["head"], str(root / "head"))
             self.assertEqual(fast["manifest"], str(root / "manifest.json"))
             self.assertEqual(fast["performance"], pair["performance"])
+            self.assertEqual(fast["performance"]["eval_num_workers"], 0)
+            self.assertEqual(fast["performance"]["num_workers"], 4)
             self.assertNotIn("accumulation_steps", fast["parameters"])
             self.assertEqual(read_json(path), source)
             self.assertFalse((root / "original-run").exists())
@@ -443,12 +451,32 @@ class BenchmarkTests(unittest.TestCase):
                     report = benchmark_command(root / "config.json", phase, root / "result", warmup_steps=1, measure_steps=2)
                     with self.assertRaises(FileExistsError):
                         benchmark_command(root / "config.json", phase, root / "result")
+                    if phase == "eval":
+                        saved_calls = calls[:]
+                        self._assert_failure_diagnostics(root, benchmark)
+                        calls[:] = saved_calls
                 self.assertEqual(calls, [3] if phase == "train" else [0, 1, 2])
                 self.assertEqual(report["measured_samples"], 2)
                 self.assertFalse(report["selection_eligible"])
                 self.assertTrue((root / "result/benchmark-only.json").is_file())
                 self.assertFalse((root / "result/index.json").exists())
                 self.assertFalse((root / "result/head.json").exists())
+
+    def _assert_failure_diagnostics(self, root, benchmark):
+        for failed_stage, target in (("iteration", "evaluate_loader"), ("cleanup", "close")):
+            owner = benchmark if failed_stage == "iteration" else StatefulBatchLoader
+            output = root / f"failed-{failed_stage}"
+            with patch.object(owner, target, side_effect=RuntimeError("synthetic abort")):
+                with self.assertRaisesRegex(RuntimeError, "synthetic abort"):
+                    benchmark_command(root / "config.json", "eval", output,
+                        warmup_steps=1, measure_steps=2)
+            failure = read_json(output / "failure.json")
+            self.assertEqual(failure["stage"], failed_stage)
+            self.assertEqual(failure["phase"], "eval")
+            self.assertEqual(failure["error_type"], "RuntimeError")
+            self.assertIn("Traceback (most recent call last)", failure["traceback"])
+            self.assertFalse(failure["auto_retry"])
+            self.assertFalse((output / "benchmark.json").exists())
 
     def test_evaluation_generator_and_observer_bounds(self):
         model = FrozenFeatureBaseline(4, 2)

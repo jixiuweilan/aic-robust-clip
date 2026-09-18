@@ -40,7 +40,13 @@ class _RemainingSampler:
     def __iter__(self):
         # Snapshot BEFORE prefetch starts; delivered position may advance later.
         stream = self.stream
-        return iter([(stream.epoch, index) for index in stream.order[stream.position:]])
+        addresses = [(stream.epoch, index) for index in stream.order[stream.position:]]
+        def remaining():
+            for address in addresses:
+                if stream._prefetch_stopping:
+                    return
+                yield address
+        return remaining()
 
     def __len__(self):
         return len(self.stream.order) - self.stream.position
@@ -90,6 +96,7 @@ class StatefulBatchLoader:
             raise DatasetError("bounded smoke streams cannot prefetch or pin memory")
         self.num_workers, self.prefetch_factor, self.pin_memory = num_workers, prefetch_factor, pin_memory
         self._parallel = self._iterator = None
+        self._prefetch_stopping = self._worker_failed = False
         self.dataset = dataset
         records = getattr(dataset, "records", None)
         ids = list(sample_ids) if sample_ids is not None else [record.sample_id for record in records or ()]
@@ -134,6 +141,7 @@ class StatefulBatchLoader:
             if self.num_workers:
                 if self._parallel is None:
                     import torch
+                    self._prefetch_stopping = False
                     self._parallel = torch.utils.data.DataLoader(
                         _AddressedDataset(self.dataset), batch_size=self.batch_size,
                         sampler=_RemainingSampler(self), collate_fn=collate_samples,
@@ -152,6 +160,7 @@ class StatefulBatchLoader:
             if batch["sample_id"] != [self.ids[index] for index in self.order[self.position:stop]]:
                 raise DatasetError("prefetch returned an unexpected sample order")
         except BaseException as exc:
+            self._worker_failed = True
             try:
                 self.close()
             except Exception as cleanup_error:
@@ -164,10 +173,34 @@ class StatefulBatchLoader:
     def close(self) -> None:
         iterator = self._iterator or getattr(self._parallel, "_iterator", None)
         workers = list(getattr(iterator, "_workers", ()))
+        self._prefetch_stopping = True
         try:
             if iterator is not None:
-                # PyTorch 2.x has no public iterator close; isolate lifecycle use.
-                iterator._shutdown_workers()
+                try:
+                    if not self._worker_failed:
+                        # Stop the sampler before draining. next() now consumes
+                        # only already-dispatched work; it cannot refill queues.
+                        # Keep consumers (including the pin thread) alive until
+                        # worker tensor transfers finish. Do NOT advance the
+                        # delivered/checkpoint cursor or run model computation.
+                        for _ in range(self.num_workers * self.prefetch_factor + 1):
+                            try:
+                                next(iterator)
+                            except StopIteration:
+                                break
+                        else:
+                            raise DatasetError("prefetch shutdown exceeded its pending-batch bound")
+                except BaseException as exc:
+                    self._worker_failed = True
+                    try:
+                        iterator._shutdown_workers()
+                    except Exception as cleanup_error:
+                        if hasattr(exc, "add_note"):
+                            exc.add_note(f"prefetch shutdown also failed: {cleanup_error}")
+                    raise
+                else:
+                    # PyTorch 2.x has no public iterator close; isolate its use.
+                    iterator._shutdown_workers()
         finally:
             self._iterator = self._parallel = None
             # Also reap workers terminated by PyTorch's exceptional shutdown.

@@ -7,6 +7,7 @@ from itertools import islice
 from pathlib import Path
 import os
 import time
+import traceback
 
 from .contracts import write_json
 from .configuration import load_config, prepare
@@ -122,6 +123,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
     write_json(root / "resolved.json", ctx.summary())
     started = time.monotonic()
     timer = StepTimer(warmup_steps, measure_steps)
+    stage = "setup"
     try:
         torch.cuda.reset_peak_memory_stats()
         with ExitStack() as resources:
@@ -135,6 +137,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                 if len(loader) < steps:
                     raise ValueError("not enough training batches for cache benchmark")
                 batches = feature_batches(loader, model, device="cuda", observer=timer)
+                stage = "iteration"
                 try:
                     for _ in islice(batches, steps):
                         pass  # no persistent feature shards or cache index
@@ -152,6 +155,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                     if len(train) <= steps * effective:
                         raise ValueError("training benchmark must stop strictly before the first epoch boundary")
                     meta = metadata_for(ctx, ctx.train, initialization=initialization, family="BENCHMARK")
+                    stage = "iteration"
                     result = train_baseline(model, loader, config=ctx.train,
                         class_count=len(ctx.class_map.id_to_index), device="cuda", policy=ctx.policy,
                         checkpoint_dir=root, checkpoint_metadata=meta,
@@ -162,8 +166,10 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                     if len(loader) < steps:
                         raise ValueError("not enough dev batches for evaluation benchmark")
                     model.to("cuda").eval()
+                    stage = "iteration"
                     evaluate_loader(model, loader, total_classes=len(ctx.class_map.id_to_index),
                         max_batches=steps, device="cuda", observer=timer)
+            stage = "report"
             report = {"kind": "benchmark_only", "phase": phase, "precision": "fp32",
                 "selection_eligible": False, "configuration": ctx.summary(),
                 "source_revision": current_code_revision(), "environment": environment_report(),
@@ -175,11 +181,15 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                 "peak_gpu_reserved_bytes": torch.cuda.max_memory_reserved(),
                 "prefetch_extra_samples_upper_bound": loader.num_workers * loader.prefetch_factor * loader.batch_size,
                 "cache_shard_write_included": False if phase == "cache" else None}
+            stage = "cleanup"
+        stage = "write_report"
         report["total_seconds_including_cleanup"] = time.monotonic() - started
         write_json(root / "benchmark.json", report)
         return report
     except BaseException as exc:
-        write_json(root / "failure.json", {"kind": "benchmark_only", "error": str(exc), "auto_retry": False})
+        write_json(root / "failure.json", {"kind": "benchmark_only", "phase": phase,
+            "stage": stage, "error_type": type(exc).__name__, "error": str(exc),
+            "traceback": traceback.format_exc(), "auto_retry": False})
         raise
 
 

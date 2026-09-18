@@ -45,7 +45,8 @@ def stream(ctx, dataset, *, shuffle=True, batch_size=None):
         batch_size = ctx.run.batch_size if dataset.purpose == "train" else perf.eval_batch_size
     return StatefulBatchLoader(dataset, batch_size=batch_size, seed=ctx.run.seed, shuffle=shuffle,
         max_samples=ctx.run.max_samples if ctx.run.execution_mode == "smoke" else None,
-        num_workers=0 if isinstance(dataset, CachedDataset) else perf.num_workers,
+        num_workers=0 if isinstance(dataset, CachedDataset) else (
+            perf.num_workers if dataset.purpose == "train" else perf.eval_num_workers),
         prefetch_factor=perf.prefetch_factor, pin_memory=perf.pin_memory)
 
 

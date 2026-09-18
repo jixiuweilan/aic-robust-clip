@@ -23,6 +23,7 @@ digests and persisted artifact schemas remain compatible. An optional top-level
 | `eval_batch_size` | training `batch_size` | 64 |
 | `head_batch_size` | training `batch_size` | 128 |
 | `num_workers` | 0 | 4 |
+| `eval_num_workers` | `num_workers` | 0 (isolated validation) |
 | `prefetch_factor` | 2 | 2 |
 | `pin_memory` | false | true |
 
@@ -35,16 +36,29 @@ Training microbatch remains `batch_size`. HEAD3 independently derives its
 accumulation from the head batch. Dev/confirm evaluation and training reliability
 scoring use the eval batch; test prediction is unchanged. Cached features and
 HEAD3 stay zero-worker regardless of the pixel-loading worker setting.
+`num_workers` controls image training/cache extraction; `eval_num_workers`
+controls dev/confirm evaluation and reliability scoring. Omitting the latter
+preserves the old global worker behavior without rewriting configuration JSON.
+New generated candidates explicitly use `eval_num_workers: 0`; this does not
+reduce the eval batch (64) or change training's worker count. Both worker
+settings must be zero in smoke configurations.
 
 The loader uses spawn, ordered delivery and persistent workers. Each request
 carries its epoch/index; augmentation remains sample-addressed. Checkpoints
-track delivered samples only. Partial reset discards outstanding work; restoring
+track delivered samples only. Normal close/partial reset first stops dispatch,
+then drains at most `workers * prefetch_factor` already-dispatched batches
+before shutting down worker/pinning queues. Drained results are discarded,
+never passed through the model or counted as delivered. This is not a full
+dataset drain. Restoring
 never advances to the worker dispatch cursor. Worker exceptions fail closed,
 with no silent fallback or retry. Archive verification stays process-local:
 every new worker verifies the archive independently. Do not edit archives or
 mapping files during a job. Worker IPC requires sufficient `/dev/shm` and local
 process communication permissions. The worker timeout is 300 seconds; if a
 cold archive verification exceeds it, report the failure rather than retrying.
+An already-failed iterator skips draining and is shut down directly. Pending
+read failures found during normal draining still fail the command; cleanup
+errors cannot replace an existing model/read exception.
 
 FP32, optimizer, effective batch 128, image processing, epoch budgets, validation
 frequency and selection rules are unchanged. Batched kernels can differ in
@@ -75,7 +89,8 @@ export MKL_NUM_THREADS=1
 ```
 
 The destination must not exist. `current` retains the supplied execution
-settings; m16/m32 use microbatch 16/32 and w0/w2/w4 use 0/2/4 workers. The
+settings; m16/m32 use microbatch 16/32 and w0/w2/w4 use 0/2/4 training/cache
+workers, all with evaluation workers explicitly zero. The
 generator preserves source inputs and optimizer settings, uses effective batch
 128, and allocates new formal output paths. It rejects non-CE/shortened profiles.
 Existing cache/head paths are intentionally retained: don't run cache/head
@@ -137,6 +152,10 @@ to time serialization, marked `BENCHMARK`; the normal checkpoint loader rejects
 it for training/inference. These outputs are not scores, formal model results,
 resumable experiments or initializer artifacts. Keep them out of deliverable
 model directories.
+Failures now retain phase, stage (`setup`, `iteration`, `report`, `cleanup`,
+or `write_report`), exception type and full traceback in `failure.json`.
+The stage identifies where the primary failure occurred, not a proven native
+crash cause. No success report is written if worker cleanup fails.
 
 Measure `current`, then m16-w0, then m16-w4. Compare m32-w0/m32-w4 if memory
 permits. If four workers lose throughput or exhaust shared resources, measure
@@ -182,3 +201,13 @@ baseline artifacts and original configuration. Begin the new paired ten-epoch
 runs with the same HEAD3 and approved settings. A three-epoch screening strategy
 is a separate experiment decision, not an engineering speedup. If FP32 remains
 too slow, report the measured bottleneck before planning FP16 or DDP.
+
+## Returned T4 measurements and worker isolation
+
+The received `outputs/t4-performance/REPORT-FOR-CODE-AGENT.md` reports fast
+training with m16/w4, but intermittent SIGABRT in multiworker evaluation. The
+original error logs do not locate the abort within iteration versus teardown.
+The bounded-drain lifecycle change addresses active-prefetch shutdown; local
+CPU regressions do not prove that the native CUDA failure is eliminated.
+Use [the paired 4060 handoff](4060-paired-performance.md) for isolated rollout
+and explicit CUDA retesting. Keep both live T4 runs and received evidence intact.
