@@ -49,11 +49,20 @@ def _mapping() -> dict:
         return {}
     path = Path(raw).absolute()
     signature = _signature(path)
-    key = (os.getpid(), str(path), signature)
+    try:
+        content = path.read_bytes()
+        content_digest = hashlib.sha256(content).hexdigest()
+        # Equal-length rewrites can share ALL stat fields on coarse clocks.
+        # Recheck bytes as well as stat, including before returning a cache hit.
+        if path.read_bytes() != content or _signature(path) != signature:
+            raise RelocationError("archive-location mapping changed while being read")
+    except OSError as exc:
+        raise RelocationError(f"cannot read archive-location mapping: {path}") from exc
+    key = (os.getpid(), str(path), content_digest)
     if _mapping_cache is not None and _mapping_cache[0] == key:
         return _mapping_cache[1]
     try:
-        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+        value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_object)
     except (OSError, UnicodeError, ValueError) as exc:
         raise RelocationError(f"cannot parse archive-location mapping: {path}") from exc
     if _signature(path) != signature:

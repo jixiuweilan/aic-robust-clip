@@ -204,11 +204,33 @@ class RelocationTests(unittest.TestCase):
             self.dataset[0]
 
     def test_changed_mapping_is_revalidated_and_other_mapping_is_not_cached(self):
-        self.dataset[0]
-        self.value["archives"][str(self.original)]["sha256"] = "0" * 64
-        write_json(self.mapping, self.value)
-        with self.assertRaisesRegex(relocation.RelocationError, "hash mismatch"):
+        # Reproduce coarse filesystem timestamps deterministically: only the
+        # small mapping's stat signature is frozen, not the archive's signature.
+        signature = relocation._signature
+        frozen = signature(self.mapping)
+        original = self.mapping.read_bytes()
+        with patch.object(relocation, "_signature", side_effect=lambda path:
+                          frozen if path == self.mapping else signature(path)), \
+                patch.object(relocation.json, "loads", wraps=json.loads) as parsed:
             self.dataset[0]
+            self.dataset[0]
+            self.assertEqual(parsed.call_count, 1)  # unchanged content reuses parsing
+            self.value["archives"][str(self.original)]["sha256"] = "0" * 64
+            write_json(self.mapping, self.value)
+            changed = self.mapping.read_bytes()
+            self.assertEqual(len(original), len(changed))
+            self.assertNotEqual(original, changed)
+            with self.assertRaisesRegex(relocation.RelocationError, "hash mismatch"):
+                self.dataset[0]
+            self.assertEqual(parsed.call_count, 2)
+            # Concurrent writes with identical stat signatures must be rejected
+            # on both the parsed-cache hit and miss paths.
+            for cached in (relocation._mapping_cache, None):
+                with self.subTest(cache_hit=cached is not None), \
+                        patch.object(relocation, "_mapping_cache", cached), \
+                        patch.object(Path, "read_bytes", autospec=True, side_effect=[changed, original]):
+                    with self.assertRaisesRegex(relocation.RelocationError, "changed while being read"):
+                        self.dataset[0]
         other = self.root / "other.json"
         other.write_text("not json")
         with patch.dict(os.environ, {"AIC_ARCHIVE_LOCATIONS": str(other)}):
