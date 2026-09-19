@@ -17,7 +17,10 @@ As of 2026-09-17, a separate-machine B01 delivery supports completion of the
 first baseline. Supplementary prediction/cache checks pass; historical test
 logs are unavailable, and the teammate's rerun is reported rather than independently
 verified. The user elected to proceed with these documented limitations.
-The next prepared task is the [matched B04/B03 comparison](docs/next-online-pair.md).
+The current 4060 task is the [LoRA learning-rate comparison](docs/4060-assignment.md),
+with [engineering acceptance and commands](docs/4060-next-round.md).
+The [B04/B03 comparison](docs/next-online-pair.md) is historical; do not repeat
+its ten-epoch baselines for this round.
 
 The current setup, commands and acceptance ledger are in
 [`docs/handoff.md`](docs/handoff.md); implementation details and historical

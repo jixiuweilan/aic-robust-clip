@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "recipe": "B03",
+  "stage": "preliminary",
+  "execution_mode": "formal",
+  "seed": 17,
+  "device": "cuda",
+  "machine_config": "/REPLACE/machine-training.json",
+  "manifest": "/REPLACE/train-audit.json",
+  "split": "/REPLACE/split-v2.json",
+  "class_map": "/REPLACE/class-map.json",
+  "weights": "/REPLACE/openai-clip-vit-b32",
+  "weight_revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+  "train_cache": "/REPLACE/cache-train",
+  "dev_cache": "/REPLACE/cache-dev",
+  "head": "/REPLACE/shared-head-seed17",
+  "output": "/REPLACE/new-source-output-unused-by-bundle",
+  "batch_size": 16,
+  "effective_batch_size": 128,
+  "limits": {
+    "max_samples": 8,
+    "max_updates": 2,
+    "max_eval_batches": 2
+  },
+  "parameters": {
+    "formal_epochs": 10,
+    "profile": "ONLINE10",
+    "objective": "ce",
+    "learning_rate": 0.001,
+    "lora_learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "scheduler": "warmup_cosine",
+    "warmup_epochs": 1
+  }
+}
