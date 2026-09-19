@@ -1,5 +1,7 @@
 # 两台 4060：缓存修复验收与 LoRA 学习率短程对照
 
+状态更新（2026-09-20）：两位组员均已暂停，下方命令仅保留作原方案记录。恢复或迁移任务需另行安排；见 [新反馈评审及缓存澄清](research/4060-feedback-20260920.md)。
+
 发任务可直接使用 [组员任务通知](4060-assignment.md)；两人使用同一份 [来源配置模板](../configs/templates/4060-source.json) 填写本机路径，并按 [回传表](4060-return-template.md) 分批返回证据。
 
 本轮只部署到两台 4060 的独立 Linux／WSL2 Linux 文件系统目录。**不更新、不重启、不操作正在运行的 T4 代码、环境、配置或产物。** T4 继续 W/P 方向；4060 探索 LoRA 学习率。旧 B03/B04 十轮基线不再重复，已有共同 HEAD3 不重建。
@@ -17,7 +19,7 @@
 
 - 保留全部历史回传和失败报告。`feedback/` 已忽略，不能清理或覆盖。B04 原报告记载的 WSL 缓存测试问题仍是历史失败；只有在该组员原机器上使用新源码通过原测试和新回归，才构成本轮复验证据。
 - 使用 `.conda/aic-robust-clip`。依赖、官方 OpenAI CLIP ViT-B/32 权重、当前赛段数据均应已存在；缺失则列清单交用户下载或传输，agent 不下载、不安装缺失包。
-- 复用冻结 manifest、split、class_map、缓存和共同 HEAD3。核对 `head.json` 与 `head.pt` 的 SHA-256，两机必须一致；运行前现有 `load_head` 还会校验实际 checkpoint 内容与身份。不得重建缓存／HEAD3 或改写冻结文件来解决路径问题。
+- 复用冻结 manifest、split、class_map 和共同 HEAD3，保留已有缓存。**已有 HEAD3 的 B03 不需要 train_cache/dev_cache 特征缓存**；check、prepare、train/eval 短窗和正式训练均不读取这两个目录，缺失不构成阻塞，无需传输或重建。核对 `head.json` 与 `head.pt` 的 SHA-256，两机必须一致；运行前现有 `load_head` 还会校验实际 checkpoint 内容与身份。不得重建 HEAD3 或改写冻结文件来解决路径问题。
 - 原配置复制成新的本机 B03 配置，填写已有资产与本机机器绑定的绝对路径；输出指向新目录。保留 seed 17、有效 batch 128、普通 CE、分类头 LR `1e-3`、LoRA LR `1e-4`、完整 ONLINE10。两机配置的非路径字段保持一致。
 - ZIP 必须在本地 Linux 文件系统中；WSL2 使用 Linux 卷，不用 `/mnt/c`、远端挂载或共享盘。新 worker 首次完整校验 ZIP 属于冷启动，不因暂时没有输出而重复启动。训练期间 ZIP 和映射均不可变。
 
