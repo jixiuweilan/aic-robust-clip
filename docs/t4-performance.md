@@ -142,9 +142,11 @@ Cache/eval and effective training batches are capped at 128. A training step
 is an effective-batch optimizer update; other steps are batches. Training
 must stop before the first epoch boundary. No validation/model selection or
 automatic continuation follows it. Train/eval require the existing shared
-HEAD3; cache measurement does not. Up to `workers * prefetch_factor` extra
-pixel batches may be read ahead, exclusively in the permitted partition;
-the GPU/update limits remain exact. Workers are closed on completion/failure.
+HEAD3; cache measurement does not. The benchmark now caps the sampler's
+dispatch at the exact warmup + measurement window (training multiplies by
+gradient accumulation). No batches beyond that window are dispatched, even
+for prefetch. Full-epoch length remains unchanged for the LR schedule.
+Workers are closed on completion/failure.
 
 Benchmark outputs are isolated and never overwritten. Cache measurements do
 not write a cache index or shards. Train measurements save one full checkpoint
@@ -156,6 +158,10 @@ Failures now retain phase, stage (`setup`, `iteration`, `report`, `cleanup`,
 or `write_report`), exception type and full traceback in `failure.json`.
 The stage identifies where the primary failure occurred, not a proven native
 crash cause. No success report is written if worker cleanup fails.
+Reports also record delivered samples, dispatch bounds and worker exit codes;
+failure reports include completed steps and measured samples. Workers enable
+Python fault-handler traces on fatal signals. A late nonzero worker exit or
+forced termination fails the run even if PyTorch's shutdown returned normally.
 
 Measure `current`, then m16-w0, then m16-w4. Compare m32-w0/m32-w4 if memory
 permits. If four workers lose throughput or exhaust shared resources, measure
@@ -211,3 +217,5 @@ The bounded-drain lifecycle change addresses active-prefetch shutdown; local
 CPU regressions do not prove that the native CUDA failure is eliminated.
 Use [the paired 4060 handoff](4060-paired-performance.md) for isolated rollout
 and explicit CUDA retesting. Keep both live T4 runs and received evidence intact.
+See [the SIGABRT follow-up](eval-worker-acceptance.md) for the current patch,
+evidence boundaries and targeted B04 acceptance procedure.

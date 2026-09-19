@@ -124,6 +124,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
     started = time.monotonic()
     timer = StepTimer(warmup_steps, measure_steps)
     stage = "setup"
+    loader = None
     try:
         torch.cuda.reset_peak_memory_stats()
         with ExitStack() as resources:
@@ -136,6 +137,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                     batch_size=ctx.performance.cache_batch_size))
                 if len(loader) < steps:
                     raise ValueError("not enough training batches for cache benchmark")
+                loader.limit_dispatch(steps)
                 batches = feature_batches(loader, model, device="cuda", observer=timer)
                 stage = "iteration"
                 try:
@@ -154,6 +156,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                     # Never cross an epoch: no validation/selection/auxiliary pass.
                     if len(train) <= steps * effective:
                         raise ValueError("training benchmark must stop strictly before the first epoch boundary")
+                    loader.limit_dispatch(steps * ctx.train.accumulation_steps)
                     meta = metadata_for(ctx, ctx.train, initialization=initialization, family="BENCHMARK")
                     stage = "iteration"
                     result = train_baseline(model, loader, config=ctx.train,
@@ -165,6 +168,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                 else:
                     if len(loader) < steps:
                         raise ValueError("not enough dev batches for evaluation benchmark")
+                    loader.limit_dispatch(steps)
                     model.to("cuda").eval()
                     stage = "iteration"
                     evaluate_loader(model, loader, total_classes=len(ctx.class_map.id_to_index),
@@ -179,16 +183,20 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                 "torch_threads": torch.get_num_threads(), "torch_interop_threads": torch.get_num_interop_threads(),
                 **timer.report(), "peak_gpu_allocated_bytes": torch.cuda.max_memory_allocated(),
                 "peak_gpu_reserved_bytes": torch.cuda.max_memory_reserved(),
-                "prefetch_extra_samples_upper_bound": loader.num_workers * loader.prefetch_factor * loader.batch_size,
+                "prefetch_extra_samples_upper_bound": 0,
+                "loader_before_cleanup": loader.diagnostics(),
                 "cache_shard_write_included": False if phase == "cache" else None}
             stage = "cleanup"
         stage = "write_report"
+        report["loader_after_cleanup"] = loader.diagnostics()
         report["total_seconds_including_cleanup"] = time.monotonic() - started
         write_json(root / "benchmark.json", report)
         return report
     except BaseException as exc:
         write_json(root / "failure.json", {"kind": "benchmark_only", "phase": phase,
             "stage": stage, "error_type": type(exc).__name__, "error": str(exc),
+            "completed_steps": timer.steps, "measured_samples": timer.samples,
+            "loader": loader.diagnostics() if loader is not None else None,
             "traceback": traceback.format_exc(), "auto_retry": False})
         raise
 

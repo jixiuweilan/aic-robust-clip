@@ -253,6 +253,7 @@ class PerformanceTests(unittest.TestCase):
                 train_baseline(continuous, loader, config=config, class_count=2, device="cpu",
                     checkpoint_dir=root / "full", checkpoint_metadata=metadata(config), stop_after_updates=2)
             with fixture_stream(workers=1, count=8) as loader:
+                loader.limit_dispatch(1)  # bounded dispatch must preserve full-epoch LR scheduling
                 train_baseline(resumed, loader, config=config, class_count=2, device="cpu",
                     checkpoint_dir=root / "resume", checkpoint_metadata=metadata(config), stop_after_updates=1)
             with fixture_stream(workers=1, count=8) as loader:
@@ -400,11 +401,12 @@ class BenchmarkTests(unittest.TestCase):
                 value = helpers.fixtures(root)
                 write_json(root / "config.json", value)
                 ctx = prepare(root / "config.json")
-                ctx.config.update(execution_mode="formal", device="cuda", effective_batch_size=1)
+                effective = 2 if phase == "train" else 1
+                ctx.config.update(execution_mode="formal", device="cuda", effective_batch_size=effective)
                 ctx.run = replace(ctx.run, execution_mode="formal")
-                ctx.train = TrainConfig(ctx.run)
+                ctx.train = TrainConfig(ctx.run, accumulation_steps=effective)
                 ctx.policy = SimpleNamespace(allow_formal=True)
-                write_json(root / "config.json", {**value, "execution_mode": "formal", "device": "cuda", "effective_batch_size": 1})
+                write_json(root / "config.json", {**value, "execution_mode": "formal", "device": "cuda", "effective_batch_size": effective})
                 tiny = AddressedFixture(8)
                 tiny.close = lambda: None
                 model = Mock()
@@ -457,6 +459,8 @@ class BenchmarkTests(unittest.TestCase):
                         calls[:] = saved_calls
                 self.assertEqual(calls, [3] if phase == "train" else [0, 1, 2])
                 self.assertEqual(report["measured_samples"], 2)
+                self.assertEqual(report["prefetch_extra_samples_upper_bound"], 0)
+                self.assertEqual(report["loader_before_cleanup"]["dispatch_stop"], 3 * effective)
                 self.assertFalse(report["selection_eligible"])
                 self.assertTrue((root / "result/benchmark-only.json").is_file())
                 self.assertFalse((root / "result/index.json").exists())
@@ -474,6 +478,8 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(failure["stage"], failed_stage)
             self.assertEqual(failure["phase"], "eval")
             self.assertEqual(failure["error_type"], "RuntimeError")
+            self.assertEqual(failure["completed_steps"], 0 if failed_stage == "iteration" else 3)
+            self.assertIsInstance(failure["loader"], dict)
             self.assertIn("Traceback (most recent call last)", failure["traceback"])
             self.assertFalse(failure["auto_retry"])
             self.assertFalse((output / "benchmark.json").exists())

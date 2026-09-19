@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import faulthandler
 from typing import Any, Sequence
 
 from ..contracts import sha256_json
@@ -40,7 +41,7 @@ class _RemainingSampler:
     def __iter__(self):
         # Snapshot BEFORE prefetch starts; delivered position may advance later.
         stream = self.stream
-        addresses = [(stream.epoch, index) for index in stream.order[stream.position:]]
+        addresses = [(stream.epoch, index) for index in stream.order[stream.position:stream._dispatch_stop]]
         def remaining():
             for address in addresses:
                 if stream._prefetch_stopping:
@@ -49,11 +50,13 @@ class _RemainingSampler:
         return remaining()
 
     def __len__(self):
-        return len(self.stream.order) - self.stream.position
+        stop = self.stream._dispatch_stop
+        return max(0, (len(self.stream.order) if stop is None else stop) - self.stream.position)
 
 
 def _worker_init(_worker_id):
     import torch
+    faulthandler.enable(all_threads=True)
     torch.set_num_threads(1)
 
 
@@ -97,6 +100,8 @@ class StatefulBatchLoader:
         self.num_workers, self.prefetch_factor, self.pin_memory = num_workers, prefetch_factor, pin_memory
         self._parallel = self._iterator = None
         self._prefetch_stopping = self._worker_failed = False
+        self._dispatch_stop = None
+        self._worker_exits = []
         self.dataset = dataset
         records = getattr(dataset, "records", None)
         ids = list(sample_ids) if sample_ids is not None else [record.sample_id for record in records or ()]
@@ -133,8 +138,31 @@ class StatefulBatchLoader:
     def __iter__(self) -> "StatefulBatchLoader":
         return self
 
+    def limit_dispatch(self, batches: int) -> None:
+        """Bound a benchmark window before spawn, without changing epoch length.
+
+        This is transient execution state, never a resumable training setting.
+        Keeping len(self) unchanged preserves the full-epoch LR schedule.
+        """
+        if type(batches) is not int or batches <= 0:
+            raise DatasetError("dispatch batch limit must be a positive integer")
+        if self._parallel is not None or self.position or self.epoch:
+            raise DatasetError("dispatch limit must be set before reading starts")
+        self._dispatch_stop = min(len(self.order), batches * self.batch_size)
+
+    def diagnostics(self) -> dict[str, Any]:
+        iterator = self._iterator or getattr(self._parallel, "_iterator", None)
+        return {"delivered_samples": self.position, "dispatch_stop": self._dispatch_stop,
+                "num_workers": self.num_workers, "pin_memory": self.pin_memory,
+                "prefetch_stopping": self._prefetch_stopping, "worker_failed": self._worker_failed,
+                "workers": [{"pid": w.pid, "exitcode": w.exitcode, "alive": w.is_alive()}
+                            for w in getattr(iterator, "_workers", ())],
+                "worker_exits": list(self._worker_exits)}
+
     def __next__(self) -> dict[str, Any]:
-        if self.exhausted:
+        if self._worker_failed:
+            raise DatasetError("loader stopped after an earlier failure; no retry")
+        if self.exhausted or (self._dispatch_stop is not None and self.position >= self._dispatch_stop):
             raise StopIteration
         stop = min(self.position + self.batch_size, len(self.order))
         try:
@@ -174,6 +202,7 @@ class StatefulBatchLoader:
         iterator = self._iterator or getattr(self._parallel, "_iterator", None)
         workers = list(getattr(iterator, "_workers", ()))
         self._prefetch_stopping = True
+        abnormal_exits = []
         try:
             if iterator is not None:
                 try:
@@ -201,16 +230,31 @@ class StatefulBatchLoader:
                 else:
                     # PyTorch 2.x has no public iterator close; isolate its use.
                     iterator._shutdown_workers()
+        except BaseException:
+            self._worker_failed = True
+            raise
         finally:
             self._iterator = self._parallel = None
             # Also reap workers terminated by PyTorch's exceptional shutdown.
             for worker in workers:
+                forced = False
                 if worker.is_alive():
+                    forced = True
                     worker.terminate()
                 worker.join(timeout=5)
                 if worker.is_alive():
                     worker.kill()
                     worker.join(timeout=5)
+                status = {"pid": worker.pid, "exitcode": worker.exitcode,
+                          "alive": worker.is_alive(), "forced": forced}
+                self._worker_exits.append(status)
+                if forced or status["alive"] or status["exitcode"] != 0:
+                    abnormal_exits.append(status)
+        # PyTorch can unregister its SIGCHLD check during shutdown. The final
+        # process status must still be checked, even if shutdown itself returns.
+        if abnormal_exits:
+            self._worker_failed = True
+            raise DatasetError(f"abnormal DataLoader worker exit: {abnormal_exits}")
 
     def __enter__(self):
         return self
