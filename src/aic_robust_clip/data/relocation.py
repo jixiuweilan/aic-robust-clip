@@ -1,18 +1,24 @@
 """Opt-in, content-verified archive locations; persisted identities never change.
 
 Only image-read paths use this module. Audit/split/cache/head identities continue
-to use the original records. Hash verification is process-local and invalidated
-by changes to the target's inode, size or timestamps. Inputs must remain immutable
+to use the original records. Hash verification is process-local, guarded by
+Linux inotify plus stat. Only local Linux filesystems (including WSL2 Linux
+volumes) are supported. Inputs must remain immutable
 while a run is active; this is not a lock against concurrent filesystem writers.
 """
 from __future__ import annotations
 
+import atexit
+import ctypes
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import struct
+import sys
+import weakref
 
 
 class RelocationError(RuntimeError):
@@ -20,7 +26,121 @@ class RelocationError(RuntimeError):
 
 
 _mapping_cache: tuple | None = None
-_verified: dict[tuple, tuple] = {}
+_verified: dict[tuple, _Watch] = {}
+_readers = weakref.WeakSet()
+_process = os.getpid()
+_finalizer = None
+
+# linux/inotify.h: watch writes/attributes and fail closed on identity/watch loss.
+_CHANGED = 0x00000002 | 0x00000004 | 0x00000008
+_LOST = 0x00000400 | 0x00000800 | 0x00002000 | 0x00004000 | 0x00008000
+_HEADER = struct.Struct("iIII")
+
+
+def register_reader(reader):
+    _readers.add(reader)
+
+
+def _invalidate(path):
+    for reader in list(_readers):
+        reader.invalidate_archive(str(path))
+
+
+class _Watch:
+    def __init__(self, path):
+        self.path, self.fd, self.signature, self.error = path, -1, None, None
+        try:
+            if sys.platform != "linux":
+                raise OSError("Linux inotify is required")
+            libc = ctypes.CDLL(None, use_errno=True)
+            init = libc.inotify_init1
+            init.argtypes, init.restype = [ctypes.c_int], ctypes.c_int
+            add = libc.inotify_add_watch
+            add.argtypes, add.restype = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32], ctypes.c_int
+            self.fd = init(os.O_NONBLOCK | os.O_CLOEXEC)
+            if self.fd < 0:
+                raise OSError(ctypes.get_errno(), "inotify_init1")
+            self.wd = add(self.fd, os.fsencode(path), _CHANGED | _LOST)
+            if self.wd < 0:
+                raise OSError(ctypes.get_errno(), "inotify_add_watch")
+        except (OSError, AttributeError) as exc:
+            self.close()
+            raise RelocationError(f"archive monitor unavailable: {path}: {exc}") from exc
+
+    def close(self):
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+    def fail(self, message):
+        self.signature = None
+        self.error = message
+        _invalidate(self.path)
+        self.close()
+        raise RelocationError(message)
+
+    def poll(self):
+        if self.error:
+            raise RelocationError(self.error)
+        changed = False
+        try:
+            while True:
+                try:
+                    events = os.read(self.fd, 65536)
+                except BlockingIOError:
+                    break
+                except InterruptedError:
+                    continue
+                if not events:
+                    self.fail(f"archive monitor lost: {self.path}")
+                offset = 0
+                while offset < len(events):
+                    if len(events) - offset < _HEADER.size:
+                        self.fail("truncated archive monitor event")
+                    wd, mask, _, size = _HEADER.unpack_from(events, offset)
+                    offset += _HEADER.size + size
+                    if offset > len(events) or mask & _LOST or wd != self.wd:
+                        self.fail(f"archive monitor lost, overflow, deletion or replacement: {self.path}")
+                    changed |= bool(mask & _CHANGED)
+        except OSError as exc:
+            self.fail(f"archive monitor read failed: {self.path}: {exc}")
+        if changed:
+            self.signature = None
+            _invalidate(self.path)
+        return changed
+
+
+def close_monitors():
+    global _mapping_cache
+    for watch in _verified.values():
+        _invalidate(watch.path)
+        watch.close()
+    _verified.clear()
+    _mapping_cache = None
+
+
+def _after_fork():
+    global _process, _finalizer
+    close_monitors()  # close inherited descriptors, never remove parent's watches
+    _process = os.getpid()
+    # multiprocessing clears inherited finalizers AFTER os.register_at_fork.
+    # Register our new finalizer lazily on the child's first resolver call.
+    _finalizer = None
+
+
+def _ensure_process():
+    global _finalizer
+    if _process != os.getpid():
+        _after_fork()
+    if _finalizer is None:
+        # multiprocessing may exit with os._exit, bypassing atexit.
+        from multiprocessing.util import Finalize
+        _finalizer = Finalize(None, close_monitors, exitpriority=10)
+
+
+atexit.register(close_monitors)
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def _signature(path: Path) -> tuple:
@@ -106,6 +226,7 @@ def resolve_archive(path: Path, *, archive_identity: str) -> Path:
     missing target or mismatched digest fails closed before any member read.
     No alternate path is tried, even if the original archive is still present.
     """
+    _ensure_process()
     entry = _mapping().get(str(path))
     if entry is None:
         return path
@@ -113,13 +234,31 @@ def resolve_archive(path: Path, *, archive_identity: str) -> Path:
     if expected != archive_identity:
         raise RelocationError("relocated archive hash mismatch with audited archive_identity")
     target = Path(entry["path"])
-    signature = _signature(target)
     key = (os.getpid(), str(target), expected)
-    if _verified.get(key) != signature:
+    watch = _verified.get(key)
+    if watch is None:
+        _invalidate(target)
+        before = _signature(target)
+        watch = _Watch(target)  # must precede the first complete hash
+        _verified[key] = watch
+        watch.identity = before[:2]
+        if _signature(target) != before:
+            watch.fail(f"relocated archive changed while establishing monitor: {target}")
+    watch.poll()
+    try:
+        signature = _signature(target)
+    except RelocationError:
+        watch.fail(f"relocated archive deleted or unreadable: {target}")
+    if signature[:2] != watch.identity:
+        watch.fail(f"relocated archive replaced: {target}")
+    if watch.signature != signature:
+        _invalidate(target)
+        watch.signature = None
         actual = _sha256_file(target)
-        if _signature(target) != signature:
-            raise RelocationError(f"relocated archive changed during verification: {target}")
+        changed = watch.poll()
+        if changed or _signature(target) != signature:
+            watch.fail(f"relocated archive changed during verification: {target}")
         if actual != expected:
             raise RelocationError(f"relocated archive hash mismatch: {target}; refusing to read")
-        _verified[key] = signature
+        watch.signature = signature
     return target

@@ -190,6 +190,82 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(expected[:2], actual[:2])
         self.assertTrue(torch.equal(expected[2], actual[2]))
 
+    def test_online_pair_shared_initialization_views_and_update_scope(self):
+        from aic_robust_clip.workflow import cache_command, init_head_command, stream, training_components
+        # Freeze the actual handoff configs as a matched pair, without enabling
+        # formal execution or inspecting any competition assets.
+        configs = Path(__file__).resolve().parents[1] / "configs/formal"
+        pair = [read_json(configs / f"{recipe}.json") for recipe in ("B04", "B03")]
+        self.assertEqual([config["recipe"] for config in pair], ["B04", "B03"])
+        self.assertNotEqual(pair[0]["output"], pair[1]["output"])
+        self.assertEqual(*[{k: v for k, v in config.items() if k not in {"recipe", "output"}} for config in pair])
+        identity = {"model_id": "openai/clip-vit-base-patch32", "revision": "a" * 40,
+                    "digest": "b" * 64, "preprocessing_digest": "c" * 64}
+        with tempfile.TemporaryDirectory() as directory, patch("aic_robust_clip.configuration.inspect_weights", return_value=identity), \
+                patch("aic_robust_clip.workflow.load_bundle", side_effect=self.bundle):
+            root = Path(directory)
+            config = self.fixtures(root)
+            path = root / "config.json"
+            write_json(path, config)
+            cache_command(path, "train")
+            head = init_head_command(path)  # HEAD-SMOKE, explicitly two updates
+            components = []
+            try:
+                for recipe in ("B04", "B03"):
+                    config.update(recipe=recipe, output=recipe)
+                    write_json(path, config)
+                    ctx = prepare(path)
+                    model, train, dev, scoring, reference, initial = training_components(ctx)
+                    components.append((ctx, model, train, dev))
+                    self.assertEqual(initial, head["sha256"])
+                    self.assertIsNone(scoring)
+                    self.assertIsNone(reference)
+                frozen, lora = components[0][1], components[1][1]
+                for name, tensor in frozen.classifier.state_dict().items():
+                    self.assertTrue(torch.equal(tensor, lora.classifier.state_dict()[name]), name)
+                lora.assert_qv_only()
+                # Sample order and transforms must not depend on RNG consumed
+                # during construction of LoRA; inspect only two fixture batches.
+                loaders = [stream(ctx, train) for ctx, _, train, _ in components]
+                for loader in loaders:
+                    loader.reset(1)
+                for _ in range(2):
+                    left = next(loaders[0])
+                    torch.rand(11)
+                    right = next(loaders[1])
+                    self.assertEqual(left["sample_id"], right["sample_id"])
+                    self.assertTrue(torch.equal(left["label_index"], right["label_index"]))
+                    self.assertTrue(torch.equal(left["image"], right["image"]))
+                for index in range(2):
+                    left, right = [item[3][index] for item in components]
+                    self.assertEqual(left.sample_id, right.sample_id)
+                    self.assertTrue(torch.equal(left.image, right.image))
+                frozen.eval()
+                lora.eval()
+                with torch.no_grad():
+                    pixels = left.image.unsqueeze(0)
+                    self.assertTrue(torch.allclose(frozen(pixels), lora(pixels), atol=1e-7, rtol=1e-6))
+                # Both branches must start, update the intended parameters only,
+                # and terminate at the same explicit two-update smoke bound.
+                for ctx, model, train, _ in components:
+                    before = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
+                    result = train_baseline(model, stream(ctx, train), config=ctx.train, class_count=2, device="cpu")
+                    self.assertEqual((result.updates, result.samples), (2, 2))
+                    self.assertTrue(result.stopped_by_limit)
+                    changed = {name for name, parameter in model.named_parameters()
+                               if not torch.equal(before[name], parameter)}
+                    allowed = {name for name, parameter in model.named_parameters() if parameter.requires_grad}
+                    self.assertTrue(changed <= allowed)
+                    self.assertTrue(any(name.startswith("classifier.") for name in changed))
+                    if model is frozen:
+                        self.assertTrue(all(name.startswith("classifier.") for name in allowed))
+                    else:
+                        self.assertTrue(any("lora_B" in name for name in changed))
+            finally:
+                for _, _, train, dev in components:
+                    train.close()
+                    dev.close()
+
     def test_huggingface_structural_qv_forward_backward(self):
         from transformers import CLIPConfig, CLIPModel
         from aic_robust_clip.models.lora import VisualLoRAModel

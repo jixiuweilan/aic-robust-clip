@@ -42,11 +42,13 @@ def dataset_for(ctx, partition, processor=None, *, online=False, purpose=None):
 def stream(ctx, dataset, *, shuffle=True, batch_size=None):
     perf = ctx.performance
     if batch_size is None:
-        batch_size = ctx.run.batch_size if dataset.purpose == "train" else perf.eval_batch_size
+        batch_size = (ctx.run.batch_size if dataset.purpose == "train" else
+                      perf.scoring_batch_size if dataset.purpose == "scoring" else perf.eval_batch_size)
     return StatefulBatchLoader(dataset, batch_size=batch_size, seed=ctx.run.seed, shuffle=shuffle,
         max_samples=ctx.run.max_samples if ctx.run.execution_mode == "smoke" else None,
         num_workers=0 if isinstance(dataset, CachedDataset) else (
-            perf.num_workers if dataset.purpose == "train" else perf.eval_num_workers),
+            perf.num_workers if dataset.purpose == "train" else
+            perf.scoring_num_workers if dataset.purpose == "scoring" else perf.eval_num_workers),
         prefetch_factor=perf.prefetch_factor, pin_memory=perf.pin_memory)
 
 
@@ -182,8 +184,10 @@ def training_components(ctx):
     return model, train, dev, scoring, reference, initialization
 
 
-def train_command(config_path, *, resume=None, stop_after_updates=None):
+def train_command(config_path, *, resume=None, stop_after_updates=None, stop_after_epochs=None):
     ctx = prepare(config_path)
+    from .training.baseline import validate_pause
+    validate_pause(ctx.train, stop_after_updates, stop_after_epochs)
     output = Path(ctx.config["output"])
     if resume is not None:
         resume = Path(resume).resolve()
@@ -213,8 +217,8 @@ def train_command(config_path, *, resume=None, stop_after_updates=None):
                 training_counts=dict(Counter(labels.values())), device=device, policy=ctx.policy,
                 training_labels=labels, scoring_loader=scoring_stream,
                 reference_encoder=reference, checkpoint_dir=root, checkpoint_metadata=meta,
-                resume_from=resume, stop_after_updates=stop_after_updates)
-        report = {**result.to_dict(), "status": "paused" if stop_after_updates is not None else "complete",
+                resume_from=resume, stop_after_updates=stop_after_updates, stop_after_epochs=stop_after_epochs)
+        report = {**result.to_dict(), "status": "paused" if result.paused else "complete",
             "evidence": "startup_only" if ctx.run.execution_mode == "smoke" else "formal",
             "label_quality": "noisy_proxy", "elapsed_seconds": time.monotonic() - started,
             "peak_gpu_allocated_bytes": torch.cuda.max_memory_allocated() if device == "cuda" else None,

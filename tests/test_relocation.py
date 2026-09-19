@@ -5,6 +5,8 @@ import copy
 import hashlib
 import importlib.util
 import json
+import multiprocessing
+import struct
 import os
 from pathlib import Path
 import shutil
@@ -76,8 +78,23 @@ class EnrollmentTests(unittest.TestCase):
                 policy.validate(RunConfig(stage="preliminary", execution_mode="smoke", **limits))
 
 
+def _child_verify(original, identity, connection):
+    try:
+        inherited = len(relocation._verified)
+        with patch.object(relocation, "_sha256_file", wraps=relocation._sha256_file) as hashed:
+            for _ in range(2):
+                relocation.resolve_archive(Path(original), archive_identity=identity)
+            connection.send((inherited, hashed.call_count, list(relocation._verified)[0][0]))
+        relocation.close_monitors()
+        connection.send(len(relocation._verified))
+    finally:
+        connection.close()
+
+
 class RelocationTests(unittest.TestCase):
     def setUp(self):
+        relocation.close_monitors()
+        self.addCleanup(relocation.close_monitors)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
@@ -197,11 +214,103 @@ class RelocationTests(unittest.TestCase):
         replacement = self.root / "replacement.zip"
         replacement.write_bytes(b"wrong replacement")
         replacement.replace(self.target)
-        with self.assertRaisesRegex(relocation.RelocationError, "hash mismatch"):
+        with self.assertRaisesRegex(relocation.RelocationError, "replac|monitor"):
             self.dataset[0]
         self.target.unlink()
         with self.assertRaises(relocation.RelocationError):
             self.dataset[0]
+
+    def test_identical_stat_rewrite_and_restored_timestamp_invalidates_handles(self):
+        signature = relocation._signature
+        frozen = signature(self.target)
+        with patch.object(relocation, "_signature", side_effect=lambda p:
+                          frozen if p == self.target else signature(p)), \
+                patch.object(relocation, "_sha256_file", wraps=relocation._sha256_file) as hashed:
+            self.dataset[0]
+            handle = self.dataset._zip_handles[str(self.target)]
+            before = self.target.stat()
+            raw = bytearray(self.target.read_bytes())
+            raw[-1] ^= 1
+            self.target.write_bytes(raw)
+            os.utime(self.target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            with self.assertRaisesRegex(relocation.RelocationError, "hash mismatch"):
+                _read_record_bytes(self.record)  # invalidates the OTHER reader too
+            self.assertIsNone(handle.fp)
+            self.assertFalse(self.dataset._zip_handles)
+            self.assertEqual(hashed.call_count, 2)
+
+    def test_attribute_event_rehashes_once_and_reopens_handle(self):
+        with patch.object(relocation, "_sha256_file", wraps=relocation._sha256_file) as hashed:
+            self.dataset[0]
+            handle = self.dataset._zip_handles[str(self.target)]
+            self.target.chmod(self.target.stat().st_mode)
+            for _ in range(10):
+                self.dataset[0]
+            self.assertEqual(hashed.call_count, 2)
+            self.assertIsNone(handle.fp)
+
+    def test_same_stat_write_during_hash_is_rejected(self):
+        signature, hashed = relocation._signature, relocation._sha256_file
+        frozen = signature(self.target)
+        def change(path):
+            digest = hashed(path)
+            path.write_bytes(path.read_bytes())
+            return digest
+        with patch.object(relocation, "_signature", side_effect=lambda p:
+                          frozen if p == self.target else signature(p)), \
+                patch.object(relocation, "_sha256_file", side_effect=change):
+            with self.assertRaisesRegex(relocation.RelocationError, "changed during verification"):
+                self.dataset[0]
+
+    def test_monitor_unavailable_no_timestamp_fallback(self):
+        with patch.object(relocation.ctypes, "CDLL", side_effect=OSError("unavailable")), \
+                patch.object(relocation, "_sha256_file", side_effect=AssertionError("must monitor first")):
+            with self.assertRaisesRegex(relocation.RelocationError, "monitor unavailable"):
+                self.dataset[0]
+
+    def test_monitor_loss_overflow_and_read_error_fail_closed(self):
+        for event in (0x4000, 0x8000, 0x2000, 0x400, 0x800, None):
+            with self.subTest(event=event):
+                relocation.close_monitors()
+                self.dataset[0]
+                handle = self.dataset._zip_handles[str(self.target)]
+                watch = next(iter(relocation._verified.values()))
+                effect = OSError("lost fd") if event is None else [struct.pack("iIII", watch.wd, event, 0, 0)]
+                with patch.object(relocation.os, "read", side_effect=effect):
+                    with self.assertRaisesRegex(relocation.RelocationError, "monitor"):
+                        self.dataset[0]
+                self.assertIsNone(handle.fp)
+                self.assertEqual(watch.fd, -1)
+                # Loss remains fatal even on a second call with no new events.
+                with self.assertRaises(relocation.RelocationError):
+                    self.dataset[0]
+
+    def test_spawn_and_fork_have_independent_caches_and_cleanup(self):
+        self.dataset[0]
+        parent_watch = next(iter(relocation._verified.values()))
+        for method in ("spawn", "fork"):
+            with self.subTest(method=method):
+                ctx = multiprocessing.get_context(method)
+                receiver, sender = ctx.Pipe(duplex=False)
+                child = ctx.Process(target=_child_verify,
+                    args=(str(self.original), self.record.archive_identity, sender))
+                child.start()
+                sender.close()
+                self.assertTrue(receiver.poll(20), "child verification did not complete")
+                inherited, hashes, pid = receiver.recv()
+                self.assertEqual((inherited, hashes), (0, 1))
+                self.assertEqual(pid, child.pid)
+                self.assertEqual(receiver.recv(), 0)
+                child.join(20)
+                self.assertEqual(child.exitcode, 0)
+                receiver.close()
+        self.assertGreaterEqual(parent_watch.fd, 0)
+        with patch.object(relocation, "_sha256_file", side_effect=AssertionError("parent cache lost")):
+            self.dataset[0]
+        fd = parent_watch.fd
+        relocation.close_monitors()
+        with self.assertRaises(OSError):
+            os.fstat(fd)
 
     def test_changed_mapping_is_revalidated_and_other_mapping_is_not_cached(self):
         # Reproduce coarse filesystem timestamps deterministically: only the

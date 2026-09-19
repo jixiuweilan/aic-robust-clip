@@ -13,11 +13,13 @@ from ..runtime import resolve_run_config, seed_everything
 from .baseline import FrozenFeatureBaseline, OnlineFrozenBaseline, TrainConfig, train_baseline
 
 
-def check_official_model(weights, revision, recipe, *, device="cpu"):
+def check_official_model(weights, revision, recipe, *, device="cpu", precision="fp32"):
     from PIL import Image
     if recipe not in RECIPES or device not in {"cpu", "cuda"}:
         raise ValueError("unknown smoke recipe/device")
-    run = RunConfig(stage="preliminary", parameters=RECIPES[recipe], max_samples=4, max_updates=2)
+    if precision not in {"fp32", "fp16"} or (precision == "fp16" and device != "cuda"):
+        raise ValueError("fp16 startup requires CUDA")
+    run = RunConfig(stage="preliminary", parameters={**RECIPES[recipe], "precision": precision}, max_samples=4, max_updates=2)
     resolve_run_config(run)
     seed_everything(run.seed)
     bundle = load_openai_clip(revision=revision, local_path=weights)
@@ -43,7 +45,7 @@ def check_official_model(weights, revision, recipe, *, device="cpu"):
         training_labels={item.sample_id: item.label_index for item in items},
         scoring_loader=loader(False) if recipe == "F100" else None, reference_encoder=reference, device=device)
     return {"recipe": recipe, "evidence": "official_weight_startup_only", "weight_identity": bundle.identity.to_dict(),
-        "device": device, "result": result.to_dict(),
+        "device": device, "precision": precision, "result": result.to_dict(),
         "peak_gpu_allocated_bytes": torch.cuda.max_memory_allocated() if device == "cuda" else None,
         "peak_gpu_reserved_bytes": torch.cuda.max_memory_reserved() if device == "cuda" else None,
         "formal_training": "not_run", "competition_images_read": 0}

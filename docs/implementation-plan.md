@@ -1,5 +1,12 @@
 # Implementation Task Plan and Agent Handoff
 
+Current update (2026-09-17): B01 execution artifacts and a separate-machine B03
+CUDA startup report have been reviewed; supplementary prediction/cache checks
+pass. Historical logs are lost, a rerun is teammate-reported, and the user elected
+to proceed with the [B04/B03 matched comparison](next-online-pair.md).
+The implementation ledger below is the historical 2026-09-16 checkpoint, not a
+claim that the received B01 run never happened or that full T09 is now closed.
+
 Prepared **2026-09-16**. Status: **review defects repaired with bounded synthetic
 regression coverage; full task acceptance remains pending**. The N01–N05
 engineering implementation and command handoff are available in

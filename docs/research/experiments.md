@@ -1,10 +1,20 @@
 # Experiment Matrix and Execution Order
 
-Status: **design only; no runs completed**. The
+Status (2026-09-17): **B01 reviewed with documented evidence limitations;
+B04/B03 prepared, not run**. The
 [CSV registry](experiment-matrix.csv) is the authoritative list of experiment
 IDs and dependencies. It is not consumed by a training program. Read
 [candidates](candidates.md) for module definitions and
 [validation](validation.md) for the selection rule.
+
+Registry status `reviewed_with_limitations` means B01 checkpoint receipts,
+prediction arithmetic and cache-index lineage pass, but old execution logs are
+unavailable and a teammate-reported rerun has not been independently observed.
+The user elected to proceed without further historical-log requests. `prepared`
+means code/configuration and a bounded fixture check are ready, not that a
+formal experiment passed. Other entries remain `planned`; neither status
+closes upstream data/provenance gates. See the [next paired task](../next-online-pair.md)
+for the current evidence boundary and release conditions.
 
 ## Execution location
 

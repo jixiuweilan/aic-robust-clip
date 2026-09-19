@@ -1,21 +1,24 @@
 # Team checkout and startup acceptance
 
-The shared repository is private:
+The shared repository is public:
 `https://github.com/jixiuweilan/aic-robust-clip`.
-Each teammate needs repository access through their own GitHub account. Never
-share the owner's token, SSH key, or authenticated CLI configuration.
+Anyone can clone it without an invitation. Never share the owner's token, SSH
+key, or authenticated CLI configuration.
 
 ## Get the code
 
-The teammate runs these commands in WSL after authenticating GitHub CLI:
+The teammate runs these commands in WSL; HTTPS Git cloning needs no GitHub
+authentication for this public repository:
 
 ```bash
-gh repo clone jixiuweilan/aic-robust-clip
+git clone https://github.com/jixiuweilan/aic-robust-clip.git
 cd aic-robust-clip
 git switch -c work/your-task
 ```
 
-Use a task branch and pull request for changes. Commit source, configuration,
+Public visibility grants read access, not push access. Without collaborator
+write permission, use a fork, task branch and pull request for changes.
+Commit source, configuration,
 tests and documentation only. Do not force-push shared history. Read `AGENTS.md`
 before working; cloning the repository does not authorize formal experiments.
 
@@ -82,8 +85,10 @@ aic-check-model --weights checkpoints/openai-clip-vit-b32 \
   --recipe B03 --device cuda --output "$AIC_CHECK_DIR/B03.json"
 ```
 
-Run each step only after the preceding check succeeds. Expected suite: 45 tests,
-no skips. The B03 check uses generated images, batch 1 and at most two optimizer
+Run each step only after the preceding check succeeds. With the migration
+regressions, the current local suite has 61 tests, no skips; see the
+[documented server baseline difference](archive-relocation.md). The B03 check
+uses generated images, batch 1 and at most two optimizer
 updates. The report must show `device=cuda`, two updates, `optimizer_updated`
 and `stopped_by_limit` true, positive peak GPU allocation, zero competition-image
 reads and `formal_training=not_run`. It does not write a trained checkpoint.
@@ -97,3 +102,7 @@ This startup check does not require `aic-doctor --bind-training`. It does not
 run full audits, caches, HEAD3 or `aic-train`. Target CUDA acceptance is separate
 from [the already-recorded local CPU evidence](validation-20260916.md), and a
 passing two-step check is not evidence of convergence or a competition score.
+
+After the first B01 delivery, the next cohesive assignment is the
+[B04/B03 matched comparison](next-online-pair.md). It preserves the original
+data split and requires a shared HEAD3; do not rerun B01 to prepare it.

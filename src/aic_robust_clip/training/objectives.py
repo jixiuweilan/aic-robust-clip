@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import math
 
 from ..models.clip import ClipDependencyError, torch
 
@@ -96,9 +97,13 @@ def supervised_loss(
     losses = torch_module.nn.functional.cross_entropy(adjusted, labels.reshape(-1).long(), reduction="none")
     if sample_weights is None:
         return losses.mean()
-    weights = sample_weights if hasattr(sample_weights, "detach") else torch_module.as_tensor(sample_weights)
+    tensor_weights = hasattr(sample_weights, "detach")
+    if not tensor_weights and any(not math.isfinite(value) or value < 0 for value in sample_weights):
+        raise ObjectiveError("sample weights must be finite and non-negative")
+    weights = sample_weights if tensor_weights else torch_module.as_tensor(sample_weights)
     weights = weights.detach().to(device=losses.device, dtype=losses.dtype).reshape(-1)
-    if weights.shape != losses.shape or torch_module.any(weights < 0):
+    if weights.shape != losses.shape or (tensor_weights and (
+            not torch_module.isfinite(weights).all() or torch_module.any(weights < 0))):
         raise ObjectiveError("sample weights must be non-negative and match the batch")
     denominator = weights.sum().clamp_min(1e-12)
     return (losses * weights).sum() / denominator

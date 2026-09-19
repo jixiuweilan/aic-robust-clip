@@ -1,7 +1,13 @@
 # Research Plan: Robust CLIP under Noisy Labels
 
 Design review: **2026-09-15**. Status: **research design complete; experiments
-not run**. All designs follow [`competition.md`](competition.md).
+not run at that review date**. All designs follow [`competition.md`](competition.md).
+
+Update 2026-09-17: received B01 execution evidence has been reviewed, with
+prediction/cache supplements verified, historical logs unavailable, and the
+teammate's rerun reported but not independently verified. The user elected to
+proceed. The next prepared assignment is the
+[matched B04/B03 comparison](next-online-pair.md); other methods remain unmeasured.
 
 ## Working decision and deliverables
 
@@ -21,7 +27,7 @@ engineering hypothesis about diagnostic value; it does not predict the winner.
 | [Experiment registry](research/experiment-matrix.csv) | Stable experiment IDs, controls, dependencies, seeds, and status |
 | [Source register](../references/research-sources.md) | Primary URLs and the evidence actually inspected |
 
-Data update, 2026-09-16: `data/train.zip` and `data/test.zip` are present;
+Historical data update, 2026-09-16: `data/train.zip` and `data/test.zip` are present;
 archive counts match the preliminary stage. Full image integrity, provenance
 and duplicate checks remain pending. No class-name map or clean validation set
 was found inside these archives. Training-machine configuration and submission

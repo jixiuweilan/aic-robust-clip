@@ -6,11 +6,33 @@ import hashlib
 import random
 import os
 import tempfile
+import shutil
 from pathlib import Path
 from typing import Any
 
 from ..contracts import CheckpointMetadata, ContractError
 from ..models.clip import ClipDependencyError, torch
+
+
+def publish_best(directory):
+    """Atomically alias the committed last snapshot, without serializing twice.
+
+    Replacing last.pt on the next epoch creates a new inode; the best snapshot
+    stays immutable. Filesystems without hard links use an atomic copy.
+    """
+    root = Path(directory)
+    descriptor, name = tempfile.mkstemp(dir=root, prefix="best.pt.")
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        temporary.unlink()
+        try:
+            os.link(root / "last.pt", temporary)
+        except OSError:
+            shutil.copyfile(root / "last.pt", temporary)
+        os.replace(temporary, root / "best.pt")
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _rng_state() -> dict[str, Any]:
@@ -81,7 +103,8 @@ def save_checkpoint(
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return hashlib.sha256(destination.read_bytes()).hexdigest()
+    with destination.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def load_checkpoint(

@@ -1,0 +1,12 @@
+id,parent,recipe,seeds,epoch_milestones,max_new_runs,status,gate,submission_eligible
+N00,B03,B03,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
+N01,N00,R01,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
+N02,N00,F100,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
+N03,N00,F010,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
+N10,N02|N03,W+P,17,3|6|10,1,conditional,both_single_modules_pass,false
+N11,N00,posthoc_prior,17,dev_only,0,conditional,train_p95_p5_at_least_1.5_and_logits,false
+N20,N01|N02|N03|N10,selected_method,17,3|6|10,4,conditional,one_survivor_and_parameter_plumbing,false
+N30,N20,CE_and_selected,17|29|43,10,6,conditional,locked_method_and_matched_controls,false
+N31,N30,CE_and_selected_LONG30,17|29|43,30,6,conditional,last_macro_epoch8_to10_gain_at_least_0.5pp,false
+N40,N30|N31,locked_confirmation,17|29|43,confirm_once,0,conditional,paired_validation_pass_and_locked_selection,false
+N50,N40,final_refit,17,locked_median_best_epoch,1,conditional,confirmation_and_leaf_record_pass,pending_leaf_gate

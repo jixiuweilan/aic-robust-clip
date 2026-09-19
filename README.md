@@ -12,16 +12,19 @@ The repository contains the competition brief, archived reference material,
 a [research design](docs/research-notes.md), explicit manifest/audit/split
 contracts, frozen-CLIP baseline code, bounded startup training, inference, and
 a submission-format validator. The research design includes a literature
-synthesis, candidate methods, validation protocol, and 29 planned experiment
-entries; those entries remain unrun until a separate training machine is
-available.
+synthesis, candidate methods, validation protocol, and 29 experiment entries.
+As of 2026-09-17, a separate-machine B01 delivery supports completion of the
+first baseline. Supplementary prediction/cache checks pass; historical test
+logs are unavailable, and the teammate's rerun is reported rather than independently
+verified. The user elected to proceed with these documented limitations.
+The next prepared task is the [matched B04/B03 comparison](docs/next-online-pair.md).
 
 The current setup, commands and acceptance ledger are in
 [`docs/handoff.md`](docs/handoff.md); implementation details and historical
 checks are in [`docs/runbook.md`](docs/runbook.md). Use the project Miniconda
 environment `.conda/aic-robust-clip`. All downloads are user-operated.
 
-For teammates cloning the private repository, start with
+For teammates cloning the public repository, start with
 [team setup and CUDA startup acceptance](docs/team-setup.md). Data, weights,
 environments and generated outputs are not included in Git.
 
@@ -30,9 +33,13 @@ defines dependencies, deliverables, acceptance criteria and local execution
 limits. The reviewed data/trainer defects have regression coverage, including
 bounded synthetic resume and research-loss checks. This is not full T01–T08
 acceptance: formal profiles and CLI orchestration are implemented, and
-[45 CPU tests pass](docs/validation-20260916.md), including tensor/E2E checks.
+[45 CPU tests passed on September 16](docs/validation-20260916.md), including
+tensor/E2E checks; the [paired preparation check](docs/next-online-pair.md)
+raised the suite to 46 tests. The [T4/relocation regressions](docs/archive-relocation.md)
+add another 15 tests while preserving frozen artifact identities.
 One bounded official-weight B03 CPU startup also passed (two updates, generated
-images only). CUDA checks on the separate training machine remain pending.
+images only). A separate-machine B03 CUDA startup report has since been
+received and reviewed; this machine has not reproduced CUDA execution.
 
 ## Local execution limit
 

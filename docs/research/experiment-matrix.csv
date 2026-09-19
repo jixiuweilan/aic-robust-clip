@@ -1,9 +1,9 @@
 id,phase,candidate,profile,control,depends_on,gate,seeds,variants,max_epochs,status,purpose
 D00,audit,manifest_and_split,audit,,none,current_stage_data,17,1,0,planned,Freeze stage manifests label quality names and duplicate groups
-B01,screen,C0,CACHE20,,D00,data_gate_passed,17,1,20,planned,Frozen encoder linear classifier starting baseline
+B01,screen,C0,CACHE20,,D00,data_gate_passed,17,1,20,reviewed_with_limitations,Frozen encoder linear classifier starting baseline
 B02,screen,C1,CACHE20,B01,B01,optional_budget,17,1,20,planned,Residual adapter on identical cached features
-B03,screen,C2_000,ONLINE10,B04,B01,data_gate_passed,17,1,10,planned,Plain visual LoRA plus CE factorial reference
-B04,screen,C0_online,ONLINE10,,B01,data_gate_passed,17,1,10,planned,Matched image augmentation frozen encoder control
+B03,screen,C2_000,ONLINE10,B04,B01,data_gate_passed,17,1,10,prepared,Plain visual LoRA plus CE factorial reference
+B04,screen,C0_online,ONLINE10,,B01,data_gate_passed,17,1,10,prepared,Matched image augmentation frozen encoder control
 B05,screen,C1_online,ONLINE10,B04,B04,optional_budget,17,1,10,planned,Online adapter versus online frozen and LoRA
 R01,loss,C2_GCE,ONLINE10,B03,B03,data_gate_passed,17,1,10,planned,GCE q 0.7 without W P I
 R02,loss,C2_SCE,ONLINE10,B03,B03,optional_budget,17,1,10,planned,SCE alpha 1 beta 1 without W P I

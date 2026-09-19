@@ -37,7 +37,11 @@ outputs/*
 *.safetensors
 pred_results.csv
 submission.zip
+/*-deliverable-*.zip
 
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Preserve private original teammate feedback locally
+feedback/

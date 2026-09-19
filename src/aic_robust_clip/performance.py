@@ -11,6 +11,8 @@ class PerformanceConfig:
     eval_num_workers: int = 0
     prefetch_factor: int = 2
     pin_memory: bool = False
+    scoring_batch_size: int = 1
+    scoring_num_workers: int = 0
 
     @classmethod
     def from_config(cls, config):
@@ -24,12 +26,14 @@ class PerformanceConfig:
             if type(number) is not int or number <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         result = cls(**{**dict.fromkeys(("cache_batch_size", "eval_batch_size", "head_batch_size"), micro),
-                       "eval_num_workers": value.get("num_workers", 0), **value})
-        for name in ("cache_batch_size", "eval_batch_size", "head_batch_size", "prefetch_factor"):
+                       "eval_num_workers": value.get("num_workers", 0),
+                       "scoring_batch_size": value.get("eval_batch_size", micro),
+                       "scoring_num_workers": value.get("eval_num_workers", value.get("num_workers", 0)), **value})
+        for name in ("cache_batch_size", "eval_batch_size", "scoring_batch_size", "head_batch_size", "prefetch_factor"):
             number = getattr(result, name)
             if type(number) is not int or number <= 0:
                 raise ValueError(f"performance.{name} must be a positive integer")
-        for name in ("num_workers", "eval_num_workers"):
+        for name in ("num_workers", "eval_num_workers", "scoring_num_workers"):
             if type(getattr(result, name)) is not int or not 0 <= getattr(result, name) <= 16:
                 raise ValueError(f"performance.{name} must be an integer between 0 and 16")
         if result.prefetch_factor > 4 or type(result.pin_memory) is not bool:
@@ -45,8 +49,8 @@ class PerformanceConfig:
             raise ValueError("accumulation_steps conflicts with the declared effective batch size")
         if config.get("execution_mode", "smoke") == "smoke" and (
                 micro != 1 or any(getattr(result, name) != 1 for name in (
-                    "cache_batch_size", "eval_batch_size", "head_batch_size"))
-                or result.num_workers or result.eval_num_workers or result.pin_memory):
+                    "cache_batch_size", "eval_batch_size", "scoring_batch_size", "head_batch_size"))
+                or result.num_workers or result.eval_num_workers or result.scoring_num_workers or result.pin_memory):
             raise ValueError("smoke requires batch sizes 1, zero workers and no pinned prefetch")
         return result
 

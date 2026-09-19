@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+from contextlib import nullcontext
 from itertools import count
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -17,7 +18,7 @@ from ..models.clip import ClipDependencyError, torch, nn
 from ..models.classifier import LinearClassifier
 from ..runtime import LOCAL_POLICY, RuntimePolicy, assert_bounded_startup, resolve_run_config, seed_everything
 from ..performance import transfer_tensor
-from .checkpoint import load_checkpoint, save_checkpoint
+from .checkpoint import load_checkpoint, save_checkpoint, publish_best
 from .objectives import combined_wpi_loss, gce_loss, sce_loss, preservation_loss
 from .optimization import optimizer_groups, warmup_cosine_factor, selection_key
 from .reliability import ReliabilityState, observed_prior
@@ -91,6 +92,7 @@ class TrainConfig:
     scheduler_gamma: float = 0.9
     lora_learning_rate: float = 1e-4
     warmup_epochs: int = 1
+    precision: str = "fp32"
 
     def __post_init__(self) -> None:
         if self.epochs <= 0 or self.learning_rate <= 0 or self.weight_decay < 0 or self.accumulation_steps <= 0:
@@ -105,6 +107,8 @@ class TrainConfig:
             raise ValueError("invalid scheduler configuration")
         if self.lora_learning_rate <= 0 or self.warmup_epochs < 0:
             raise ValueError("invalid optimizer/scheduler parameters")
+        if self.precision not in {"fp32", "fp16"}:
+            raise ValueError("precision must be fp32 or fp16")
 
     @classmethod
     def from_run(cls, run: RunConfig) -> "TrainConfig":
@@ -115,7 +119,10 @@ class TrainConfig:
 
     @property
     def digest(self) -> str:
-        return sha256_json(asdict(self))
+        value = asdict(self)
+        if self.precision == "fp32":
+            value.pop("precision")  # preserve legacy FP32 checkpoint identity
+        return sha256_json(value)
 
 
 @dataclass
@@ -132,6 +139,9 @@ class BaselineResult:
     scoring_samples: int = 0
     epoch_logs: list[dict[str, Any]] = field(default_factory=list)
     checkpoint_hashes: dict[str, str] = field(default_factory=dict)
+    paused: bool = False
+    completed_epochs: int = 0
+    phase_timings: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,7 +155,75 @@ class BaselineResult:
             "scoring_samples": self.scoring_samples,
             "epoch_logs": self.epoch_logs,
             "checkpoint_hashes": self.checkpoint_hashes,
+            "paused": self.paused,
+            "completed_epochs": self.completed_epochs,
+            "phase_timings": self.phase_timings,
         }
+
+
+def validate_pause(config, updates, epochs):
+    if updates is not None and (type(updates) is not int or updates <= 0):
+        raise TrainingError("stop_after_updates must be a positive integer")
+    if epochs is not None:
+        if updates is not None:
+            raise TrainingError("epoch and update pauses are mutually exclusive")
+        if type(epochs) is not int or not 1 <= epochs <= config.epochs:
+            raise TrainingError("stop_after_epochs must be within the full training schedule")
+        if config.run.execution_mode == "smoke":
+            raise TrainingError("epoch pause is formal-only; smoke retains its strict sample/update caps")
+
+
+def _phase_clock(device):
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize()
+    return time.monotonic()
+
+
+def score_training_loader(model, loader, *, device, max_batches=None, observer=None):
+    """Fixed-view raw CE scores; one host transfer per pass, never fits labels.
+
+    Only detached scalar losses are retained on device (about 0.32 MB for 83k
+    samples), not images/features/graphs. Benchmark callers bound dispatch.
+    """
+    dataset = getattr(loader, "dataset", None)
+    if hasattr(dataset, "purpose") and dataset.purpose != "scoring":
+        raise TrainingError("scoring accepts only the training scoring partition")
+    was_training = model.training
+    ids, values = [], []
+    model.eval()
+    try:
+        with torch.no_grad():
+            iterator = iter(loader)
+            for _ in (range(max_batches) if max_batches is not None else count()):
+                if observer is not None:
+                    observer.begin_step()
+                try:
+                    batch = next(iterator)
+                except StopIteration:
+                    break
+                if observer is not None:
+                    observer.data_ready()
+                images, labels = _unpack_batch(batch)
+                images, labels = _prepare_images(images, device), _prepare_labels(labels, device)
+                if observer is not None:
+                    observer.cuda_mark("transfer")
+                logits = model(images)
+                scores = torch.nn.functional.cross_entropy(logits.float(), labels, reduction="none")
+                if len(batch["sample_id"]) != len(scores):
+                    raise TrainingError("scoring IDs and losses differ in length")
+                ids.extend(batch["sample_id"])
+                values.append(scores.detach())
+                if observer is not None:
+                    observer.cuda_mark("compute")
+                    observer.end_step(len(scores))
+        if not values or len(ids) != len(set(ids)):
+            raise TrainingError("scoring stream empty or repeated a sample")
+        losses = torch.cat(values).cpu().tolist()
+        if any(not math.isfinite(value) or value < 0 for value in losses):
+            raise TrainingError("nonfinite scoring loss")
+        return dict(zip(ids, losses))
+    finally:
+        model.train(was_training)
 
 
 def _unpack_batch(batch: Any) -> tuple[Any, Any]:
@@ -210,6 +288,7 @@ def evaluate_loader(
         device = next(model.parameters()).device
     labels: list[int] = []
     predictions: list[int] = []
+    prediction_chunks, finite_chunks = [], []
     was_training = model.training
     model.eval()
     with torch.no_grad():
@@ -225,7 +304,9 @@ def evaluate_loader(
                 observer.data_ready()
             images, batch_labels = _unpack_batch(batch)
             images = _prepare_images(images, device)
-            batch_labels_tensor = _prepare_labels(batch_labels, device)
+            # Labels are not used by the model: don't send them to CUDA only
+            # to synchronously bring them back for CPU metrics.
+            batch_labels_tensor = _prepare_labels(batch_labels, "cpu")
             if observer is not None:
                 observer.cuda_mark("transfer")
             logits = model(images)
@@ -233,13 +314,17 @@ def evaluate_loader(
                 observer.cuda_mark("compute")
             batch_predictions = logits.argmax(dim=-1)
             labels.extend(int(value) for value in batch_labels_tensor.cpu().tolist())
-            predictions.extend(int(value) for value in batch_predictions.cpu().tolist())
+            prediction_chunks.append(batch_predictions.detach())
+            finite_chunks.append(torch.isfinite(logits).all())
             if observer is not None:
                 observer.end_step(len(batch_labels_tensor))
     if was_training:
         model.train()
     if not labels:
         raise TrainingError("evaluation loader produced no labels")
+    if not torch.stack(finite_chunks).all():
+        raise TrainingError("nonfinite evaluation logits")
+    predictions = torch.cat(prediction_chunks).cpu().tolist()
     return evaluate_classification(labels, predictions, total_classes=total_classes, training_counts=training_counts), predictions, labels
 
 
@@ -261,6 +346,7 @@ def train_baseline(
     checkpoint_metadata: CheckpointMetadata | None = None,
     resume_from: Path | str | None = None,
     stop_after_updates: int | None = None,
+    stop_after_epochs: int | None = None,
     observer: Any = None,
 ) -> BaselineResult:
     """Common baseline/research loop; resume only at committed update boundaries.
@@ -275,8 +361,7 @@ def train_baseline(
         raise ClipDependencyError("install torch before running a baseline")
     resolve_run_config(config.run, policy)
     smoke = config.run.execution_mode == "smoke"
-    if stop_after_updates is not None and stop_after_updates <= 0:
-        raise TrainingError("stop_after_updates must be positive")
+    validate_pause(config, stop_after_updates, stop_after_epochs)
     if smoke and stop_after_updates is not None and stop_after_updates >= config.run.max_updates:
         raise TrainingError("pause before the smoke update cap; omit pause to finish the check")
     if smoke:
@@ -352,6 +437,10 @@ def train_baseline(
         seed_everything(config.run.seed)
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+    use_amp = config.precision == "fp16"
+    if use_amp and not str(device).startswith("cuda"):
+        raise TrainingError("fp16 requires CUDA; no silent precision fallback")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp, init_scale=1024.)
     model.to(device)
     model.train()
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
@@ -395,6 +484,10 @@ def train_baseline(
         if train_loader.epoch != epoch:
             raise TrainingError("checkpoint epoch and stream cursor disagree")
         state = restored["module_state"]
+        if use_amp:
+            if not state.get("grad_scaler"):
+                raise TrainingError("FP16 resume requires saved GradScaler state")
+            scaler.load_state_dict(state["grad_scaler"])
         result.epoch_logs = list(state.get("epoch_logs", []))
         if state.get("prior") != prior:
             raise TrainingError("resume training prior differs")
@@ -407,6 +500,8 @@ def train_baseline(
             raise TrainingError("checkpoint exceeds smoke budget")
         if smoke and (result.reference_samples > config.run.max_samples or result.scoring_samples > config.run.max_samples):
             raise TrainingError("checkpoint exceeds auxiliary smoke budget")
+        if stop_after_epochs is not None and epoch >= stop_after_epochs:
+            raise TrainingError("requested epoch boundary is already completed; choose a later boundary")
     if config.lambda_preserve:
         reference_encoder.to(device).eval()
         for parameter in reference_encoder.parameters():
@@ -431,6 +526,8 @@ def train_baseline(
         modules = {"prior": prior, "reliability": reliability.state_dict() if config.weighting else None,
                    "configuration": asdict(config), "dependencies": dependencies,
                    "epoch_logs": result.epoch_logs}
+        if use_amp:
+            modules["grad_scaler"] = scaler.state_dict()
         path = Path(checkpoint_dir) / f"{name}.pt"
         result.checkpoint_hashes[name] = save_checkpoint(path, model=model, metadata=metadata,
             optimizer=optimizer, scheduler=scheduler, sampler_state=train_loader.state_dict(), module_state=modules)
@@ -440,6 +537,10 @@ def train_baseline(
     optimizer.zero_grad(set_to_none=True)
     paused = False
     while epoch < config.epochs:
+        epoch_started = _phase_clock(device)
+        timing = {"epoch": epoch, "train_seconds": 0., "scoring_seconds": 0.,
+                  "dev_seconds": 0., "checkpoint_seconds": 0., "data_wait_seconds": 0.,
+                  "train_samples": 0, "reference_samples": 0, "scoring_samples": 0}
         if smoke and (result.samples >= config.run.max_samples or result.updates >= config.run.max_updates):
             result.stopped_by_limit = True
             break
@@ -460,6 +561,7 @@ def train_baseline(
                 observer.begin_step()
             group = []
             group_samples = 0
+            data_started = time.monotonic()
             for _ in range(config.accumulation_steps):
                 remaining = config.run.max_samples - result.samples - group_samples if smoke else None
                 if remaining == 0:
@@ -486,6 +588,8 @@ def train_baseline(
                 group_samples += count
             if not group:
                 break
+            timing["data_wait_seconds"] += time.monotonic() - data_started
+            timing["train_samples"] += group_samples
             if observer is not None:
                 observer.data_ready()
             mass = sum(sum(weights) if weights is not None else count for _, _, count, weights in group)
@@ -495,13 +599,17 @@ def train_baseline(
                 if observer is not None:
                     observer.cuda_mark("transfer")
                 features = frozen_features = None
-                if config.lambda_preserve:
-                    logits, features = model.forward_with_features(images)
-                    with torch.no_grad():
-                        frozen_features = reference_encoder(images)
-                    result.reference_samples += count
-                else:
-                    logits = model(images)
+                with torch.autocast("cuda", dtype=torch.float16) if use_amp else nullcontext():
+                    if config.lambda_preserve:
+                        logits, features = model.forward_with_features(images)
+                        with torch.no_grad():
+                            frozen_features = reference_encoder(images)
+                        result.reference_samples += count
+                        timing["reference_samples"] += count
+                    else:
+                        logits = model(images)
+                # Losses and feature normalization stay FP32 even under AMP.
+                logits = logits.float()
                 if config.objective == "gce":
                     supervised = gce_loss(logits, labels, q=config.gce_q)
                 elif config.objective == "sce":
@@ -511,19 +619,23 @@ def train_baseline(
                                                   tau=config.prior_tau)
                 contribution = supervised * ((sum(weights) if weights is not None else count) / max(mass, 1e-12))
                 if config.lambda_preserve:
-                    contribution = contribution + config.lambda_preserve * preservation_loss(features, frozen_features) * count / group_samples
-                if not torch.isfinite(contribution):
-                    raise TrainingError("nonfinite loss; run stopped without retry")
-                contribution.backward()
+                    contribution = contribution + config.lambda_preserve * preservation_loss(features.float(), frozen_features.float()) * count / group_samples
+                scaler.scale(contribution).backward()
                 detached_losses.append(contribution.detach())
                 result.samples += count
                 if observer is not None:
                     observer.cuda_mark("compute")
+            scaler.unscale_(optimizer)
             finite_gradients = [torch.isfinite(parameter.grad).all() for parameter in trainable if parameter.grad is not None]
+            # Check once per effective batch before any optimizer update,
+            # rather than synchronizing CUDA once for every microbatch.
+            if not torch.isfinite(torch.stack(detached_losses)).all():
+                raise TrainingError("nonfinite loss; run stopped without retry")
             if finite_gradients and not torch.stack(finite_gradients).all():
                 raise TrainingError("nonfinite gradient; run stopped without retry")
             result.losses.extend(torch.stack(detached_losses).cpu().tolist())
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             result.updates += 1
@@ -540,28 +652,26 @@ def train_baseline(
         if paused:
             break
         exhausted = exhausted or (isinstance(train_loader, StatefulBatchLoader) and train_loader.exhausted)
+        timing["train_seconds"] = _phase_clock(device) - epoch_started
+        phase_started = _phase_clock(device)
         if config.weighting:
             scoring_loader.reset(0)
-            losses_by_id: dict[str, float] = {}
-            model.eval()
-            with torch.no_grad():
-                for batch in scoring_loader:
-                    images, labels = _unpack_batch(batch)
-                    logits = model(_prepare_images(images, device))
-                    scores = torch.nn.functional.cross_entropy(logits, _prepare_labels(labels, device), reduction="none")
-                    for sample_id, value in zip(batch["sample_id"], scores.cpu().tolist()):
-                        if sample_id in losses_by_id:
-                            raise TrainingError("scoring stream repeated a sample")
-                        losses_by_id[sample_id] = value
-                    result.scoring_samples += len(scores)
-            model.train()
+            losses_by_id = score_training_loader(model, scoring_loader, device=device)
+            result.scoring_samples += len(losses_by_id)
+            timing["scoring_samples"] = len(losses_by_id)
             if exhausted:
                 reliability.finish_epoch(losses_by_id)
             else:
                 # A partial smoke pass is not a completed formal warm-up epoch.
                 reliability.update_losses(losses_by_id)
                 reliability.next_epoch_weights()
+            if checkpoint_dir is not None:
+                write_json(Path(checkpoint_dir) / f"reliability-epoch-{epoch:04d}.json", {
+                    "completed_epochs": reliability.completed_epochs,
+                    "next_epoch_weight_statistics": reliability.diagnostics(), "label_changes": 0})
+            timing["scoring_seconds"] = _phase_clock(device) - phase_started
         selected = False
+        phase_started = _phase_clock(device)
         if dev_loader is not None:
             if isinstance(dev_loader, StatefulBatchLoader):
                 dev_loader.reset(0)
@@ -571,6 +681,7 @@ def train_baseline(
             score = selection_key(result.dev_metrics, epoch)
             selected = score > best_score
             best_score = max(best_score, score)
+            timing["dev_seconds"] = _phase_clock(device) - phase_started
         result.epoch_logs.append({"epoch": epoch, "complete": exhausted,
             "updates": result.updates, "samples": result.samples,
             "dev_metrics": result.dev_metrics.to_dict() if result.dev_metrics else None})
@@ -585,13 +696,25 @@ def train_baseline(
             epoch += 1
             if isinstance(train_loader, StatefulBatchLoader):
                 train_loader.reset(epoch)
-        if selected:
-            persist("best")
+        phase_started = _phase_clock(device)
         persist("last")
+        if selected and checkpoint_dir is not None:
+            publish_best(checkpoint_dir)
+            result.checkpoint_hashes["best"] = result.checkpoint_hashes["last"]
+        timing["checkpoint_seconds"] = _phase_clock(device) - phase_started
+        timing["total_seconds"] = _phase_clock(device) - epoch_started
+        result.phase_timings.append(timing)
+        if checkpoint_dir is not None:
+            # One file per epoch keeps resumed segments from overwriting timings.
+            write_json(Path(checkpoint_dir) / f"timing-epoch-{timing['epoch']:04d}.json", timing)
+        if exhausted and stop_after_epochs is not None and epoch >= stop_after_epochs:
+            paused = epoch < config.epochs
+            break
         if result.stopped_by_limit or smoke:
             break
-    if paused:
+    if paused and stop_after_epochs is None:
         persist("last")
+    result.paused, result.completed_epochs = paused, epoch
     if smoke:
         assert_bounded_startup(updates=result.updates, samples=result.samples, config=config.run)
         if result.reference_samples > config.run.max_samples or result.scoring_samples > config.run.max_samples:

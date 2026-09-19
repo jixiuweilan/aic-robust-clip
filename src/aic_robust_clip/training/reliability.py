@@ -115,6 +115,19 @@ class ReliabilityState:
             return 0.0
         return sum(weights) ** 2 / sum(value * value for value in weights)
 
+    def diagnostics(self) -> dict[str, dict[str, float]]:
+        """One linear pass, not one scan of all training IDs for every class."""
+        result = {}
+        for sample_id, weight in (self.weights or {}).items():
+            row = result.setdefault(self.observed_class_ids[sample_id],
+                                    {"count": 0, "weight_sum": 0., "weight_square_sum": 0.})
+            row["count"] += 1
+            row["weight_sum"] += weight
+            row["weight_square_sum"] += weight * weight
+        for row in result.values():
+            row["ess"] = row["weight_sum"] ** 2 / max(row["weight_square_sum"], 1e-12)
+        return result
+
     def state_dict(self) -> dict[str, object]:
         return {
             "sample_ids": list(self.sample_ids),

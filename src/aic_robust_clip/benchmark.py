@@ -15,7 +15,8 @@ from .data.cache import feature_batches
 from .environment import environment_report
 from .models.clip import torch
 from .runtime import RuntimeLimitError, current_code_revision
-from .training.baseline import evaluate_loader, train_baseline
+from .training.baseline import evaluate_loader, score_training_loader, train_baseline
+from .training.reliability import ReliabilityState
 
 
 class StepTimer:
@@ -89,8 +90,8 @@ class StepTimer:
 
 
 def validate_request(phase, warmup_steps, measure_steps):
-    if phase not in {"cache", "train", "eval"}:
-        raise ValueError("benchmark phase must be cache, train or eval; never confirm/test")
+    if phase not in {"cache", "train", "eval", "scoring"}:
+        raise ValueError("benchmark phase must be cache, train, eval or scoring; never confirm/test")
     if type(warmup_steps) is not int or not 0 <= warmup_steps <= 5:
         raise ValueError("warmup_steps must be an integer from 0 to 5")
     if type(measure_steps) is not int or not 1 <= measure_steps <= 20:
@@ -102,19 +103,22 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
     config = load_config(config_path)
     if config.get("execution_mode") != "formal" or config.get("device") != "cuda":
         raise RuntimeLimitError("benchmark requires an enrolled remote CUDA formal configuration")
-    if config["recipe"] not in {"B03", "B04"}:
-        raise ValueError("v1 benchmark accepts B03/B04 controls only")
+    if config["recipe"] not in {"B03", "B04", "R01", "F100", "F010"}:
+        raise ValueError("benchmark accepts B03/B04/R01/F100/F010 only")
     root = Path(output)
     if root.exists():
         raise FileExistsError(root)
     ctx = prepare(config_path)  # host enrollment, full artifact identity checks
     if not ctx.policy.allow_formal or not torch.cuda.is_available():
         raise RuntimeLimitError("benchmark requires an enrolled CUDA training host")
-    if any(getattr(ctx.train, name) for name in ("weighting", "lambda_preserve", "prior_tau")) or ctx.train.objective != "ce":
-        raise ValueError("v1 benchmark measures unmodified CE controls only")
+    if ctx.train.prior_tau or ctx.train.objective not in {"ce", "gce"}:
+        raise ValueError("benchmark excludes prior adjustment and unsupported objectives")
+    if phase == "scoring" and not ctx.train.weighting:
+        raise ValueError("scoring benchmark requires a W recipe")
     effective = ctx.run.batch_size * ctx.train.accumulation_steps
     if (effective != config.get("effective_batch_size", 128) or effective > 128
-            or ctx.performance.cache_batch_size > 128 or ctx.performance.eval_batch_size > 128):
+            or ctx.performance.cache_batch_size > 128 or ctx.performance.eval_batch_size > 128
+            or ctx.performance.scoring_batch_size > 128):
         raise ValueError("benchmark requires consistent effective batch size and batches at most 128")
     from .workflow import dataset_for, load_bundle, metadata_for, stream, training_components
     steps = warmup_steps + measure_steps
@@ -150,7 +154,7 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                 for dataset in (train, dev, scoring):
                     if hasattr(dataset, "close"):
                         resources.callback(dataset.close)
-                dataset = train if phase == "train" else dev
+                dataset = train if phase == "train" else scoring if phase == "scoring" else dev
                 loader = resources.enter_context(stream(ctx, dataset, shuffle=phase == "train"))
                 if phase == "train":
                     # Never cross an epoch: no validation/selection/auxiliary pass.
@@ -158,23 +162,41 @@ def benchmark_command(config_path, phase, output, *, warmup_steps=2, measure_ste
                         raise ValueError("training benchmark must stop strictly before the first epoch boundary")
                     loader.limit_dispatch(steps * ctx.train.accumulation_steps)
                     meta = metadata_for(ctx, ctx.train, initialization=initialization, family="BENCHMARK")
+                    auxiliary = {}
+                    if ctx.train.lambda_preserve:
+                        auxiliary["reference_encoder"] = reference
+                    if ctx.train.weighting:
+                        labels = {record.sample_id: train.class_to_index[record.class_id] for record in train.records}
+                        reliability = ReliabilityState(tuple(sorted(labels)), {key: str(value) for key, value in labels.items()})
+                        # Exercise nonuniform W arithmetic without an unbounded
+                        # warmup/scoring pass. Never use this synthetic history
+                        # for model selection or formal resume.
+                        reliability.weights = {key: .2 + .8 * (i % 5) / 4 for i, key in enumerate(sorted(labels))}
+                        auxiliary.update(training_labels=labels, reliability=reliability,
+                            scoring_loader=resources.enter_context(stream(ctx, scoring, shuffle=False)))
                     stage = "iteration"
                     result = train_baseline(model, loader, config=ctx.train,
                         class_count=len(ctx.class_map.id_to_index), device="cuda", policy=ctx.policy,
                         checkpoint_dir=root, checkpoint_metadata=meta,
-                        stop_after_updates=steps, observer=timer)
+                        stop_after_updates=steps, observer=timer, **auxiliary)
                     if result.updates != steps:
                         raise ValueError("benchmark did not reach its exact bounded update count")
                 else:
                     if len(loader) < steps:
-                        raise ValueError("not enough dev batches for evaluation benchmark")
+                        raise ValueError("not enough batches for evaluation/scoring benchmark")
                     loader.limit_dispatch(steps)
                     model.to("cuda").eval()
                     stage = "iteration"
-                    evaluate_loader(model, loader, total_classes=len(ctx.class_map.id_to_index),
-                        max_batches=steps, device="cuda", observer=timer)
+                    if phase == "scoring":
+                        score_training_loader(model, loader, max_batches=steps, device="cuda", observer=timer)
+                    else:
+                        evaluate_loader(model, loader, total_classes=len(ctx.class_map.id_to_index),
+                            max_batches=steps, device="cuda", observer=timer)
             stage = "report"
-            report = {"kind": "benchmark_only", "phase": phase, "precision": "fp32",
+            report = {"kind": "benchmark_only", "phase": phase,
+                "precision": ctx.train.precision if phase == "train" else "fp32",
+                "weighting_state": "synthetic_nonuniform_benchmark_only" if ctx.train.weighting and phase == "train" else None,
+                "reference_forward_included": bool(ctx.train.lambda_preserve and phase == "train"),
                 "selection_eligible": False, "configuration": ctx.summary(),
                 "source_revision": current_code_revision(), "environment": environment_report(),
                 "execution_environment": {name: os.environ.get(name) for name in (

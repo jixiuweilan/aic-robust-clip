@@ -68,13 +68,14 @@ def model_smoke_main(argv=None):
     parser.add_argument("--revision", required=True)
     parser.add_argument("--recipe", choices=("B01", "B04", "B03", "R01", "F100", "F010", "F001"), required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     def action():
         if args.output.exists():
             raise FileExistsError(args.output)
         from .training.model_smoke import check_official_model
-        result = check_official_model(args.weights, args.revision, args.recipe, device=args.device)
+        result = check_official_model(args.weights, args.revision, args.recipe, device=args.device, precision=args.precision)
         write_json(args.output, result)
         return result
     return _execute(action)
@@ -97,15 +98,18 @@ def init_head_main(argv=None):
 def train_main(argv=None):
     parser = _parser("Train a resolved recipe; local execution is bounded smoke only")
     parser.add_argument("--resume", type=Path)
-    parser.add_argument("--stop-after-updates", type=int)
+    stop = parser.add_mutually_exclusive_group()
+    stop.add_argument("--stop-after-updates", type=int)
+    stop.add_argument("--stop-after-epochs", type=int, help="absolute completed epoch boundary; preserves the full schedule")
     args = parser.parse_args(argv)
     from .workflow import train_command
-    return _execute(lambda: train_command(args.config, resume=args.resume, stop_after_updates=args.stop_after_updates))
+    return _execute(lambda: train_command(args.config, resume=args.resume, stop_after_updates=args.stop_after_updates,
+                                         stop_after_epochs=args.stop_after_epochs))
 
 
 def benchmark_main(argv=None):
     parser = _parser("Bounded remote CUDA benchmark only; no automatic continuation or model selection")
-    parser.add_argument("--phase", choices=("cache", "train", "eval"), required=True)
+    parser.add_argument("--phase", choices=("cache", "train", "eval", "scoring"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--measure-steps", type=int, default=10)

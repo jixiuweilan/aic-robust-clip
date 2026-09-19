@@ -6,6 +6,11 @@ in the common trainer have bounded synthetic regression coverage; this remains a
 specification for measured experiments. Source mechanisms and transfer limits are in
 [the literature synthesis](literature.md).
 
+Update 2026-09-17: B01/C0 now has reviewed execution evidence and verified
+prediction/cache supplements, with historical-log limitations recorded in the
+handoff. Other candidate methods remain unmeasured. Next is the
+[matched B04/B03 task](../next-online-pair.md), not the full candidate matrix.
+
 ## Candidate map
 
 | Candidate | Inputs needed | Trainable state | Priority |

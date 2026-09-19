@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from ..contracts import PARTITIONS, ContractError, SampleRecord, SplitRecord, sha256_json
-from .relocation import resolve_archive
+from .relocation import register_reader, resolve_archive
 
 
 class DatasetError(ValueError):
@@ -167,7 +167,12 @@ class ManifestDataset:
         # Opening one handle per archive per worker avoids sharing a ZipFile
         # object across DataLoader worker processes.
         self._ensure_process()
-        archive_path = resolve_archive(Path(record.archive_path), archive_identity=record.archive_identity)
+        register_reader(self)
+        try:
+            archive_path = resolve_archive(Path(record.archive_path), archive_identity=record.archive_identity)
+        except Exception:
+            self.close()
+            raise
         if archive_path.is_dir():
             return _read_record_bytes(record)
         key = str(archive_path)
@@ -200,6 +205,11 @@ class ManifestDataset:
 
     def set_epoch(self, epoch):
         self.epoch = epoch
+
+    def invalidate_archive(self, path: str) -> None:
+        archive = self._zip_handles.pop(path, None)
+        if archive is not None:
+            archive.close()
 
     def close(self) -> None:
         for archive in self._zip_handles.values():

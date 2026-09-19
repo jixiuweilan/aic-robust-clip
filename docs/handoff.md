@@ -4,7 +4,16 @@ Prepared 2026-09-16. **Code implementation is available; acceptance is not yet
 complete.** [Current CPU validation](validation-20260916.md) passes all 45 tests
 without skips; official-weight B03 CPU startup also passed. The separate 4060's
 CUDA startup checks remain pending. No formal
-training, full-data cache, scored experiment, or official submission has run.
+training, full-data cache, scored experiment, or official submission had run
+at that historical checkpoint.
+
+Update 2026-09-17: the received B01 package supports completion of CACHE20 and
+includes a B03 CUDA startup report. Supplementary prediction/cache-index checks
+pass. Old test logs are unavailable; the teammate reports a successful rerun,
+and the user elected to proceed. This is not local CUDA reproduction.
+The current next assignment and evidence boundary are in
+[B04/B03 matched comparison](next-online-pair.md). The commands below remain
+setup reference, not instructions to recreate existing data/caches or rerun B01.
 
 ## Machine and download boundaries
 
@@ -65,7 +74,9 @@ aic-doctor --output outputs/environment/preflight.json \
   --record-lock outputs/environment/installed-lock.txt
 ```
 
-Only on the separate CUDA-visible 4060, explicitly enroll the machine:
+Only on the separate approved CUDA-visible RTX 4060 or Tesla T4, explicitly
+enroll the machine. See [T4 enrollment and archive relocation](archive-relocation.md)
+for migration without changing the frozen input identities:
 
 ```bash
 aic-doctor --bind-training machine-training.json
@@ -219,7 +230,10 @@ resolved config, code identity, dependencies, optimizer/scheduler/RNG/cursor,
 prior and reliability history. The result records hashes and resource evidence.
 Failures write `failure.json` and stop without automatic retries.
 
-## 5. Acceptance ledger
+## 5. Historical acceptance ledger (2026-09-16)
+
+For the 2026-09-17 received B01 evidence and 46-test local preparation check,
+see [the next task](next-online-pair.md); the rows below retain the earlier state.
 
 | Item | Evidence / status |
 | --- | --- |

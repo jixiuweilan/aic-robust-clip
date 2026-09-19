@@ -97,6 +97,10 @@ class FrozenCLIPEncoder(nn.Module):  # type: ignore[misc]
                 features = self.clip_model.get_image_features(pixel_values=pixel_values)
         else:
             features = self.clip_model.get_image_features(pixel_values=pixel_values)
+        # Keep feature normalization in FP32 under training autocast as well.
+        # FP32 callers retain the exact original arithmetic.
+        if features.dtype in (torch.float16, torch.bfloat16):
+            features = features.float()
         return features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
 
     @property
