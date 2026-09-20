@@ -64,6 +64,17 @@ def measured(root, member, bind):
     return bundle_path
 
 
+def joint_ready(root):
+    bundle = measured(root / "A", "A", binding())
+    measured(root / "B", "B", binding("host-B"))
+    selection = root / "selection.json"
+    selected = r.select(root / "A/summary.json", root / "B/summary.json", selection)
+    config = load_config(read_json(bundle)["configs"][selected["profile"]]["control"])
+    for i in range(1, 4):
+        write_json(root / f"repeat/eval-{i}/benchmark.json", report(config, "eval", binding()))
+    return bundle, selection
+
+
 class RTX4060Tests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -192,6 +203,129 @@ class RTX4060Tests(unittest.TestCase):
             write_json(self.root / "repeat/eval-1/benchmark.json", {"changed": True})
             with self.assertRaisesRegex(ValueError, "evidence changed"):
                 r.run(a, receipt_path, "control")
+
+    def test_accept_rejects_actual_single_host_selection_shape_and_renamed_copy(self):
+        bundle, path = joint_ready(self.root)
+        original = read_json(path)
+        summary = original["summaries"]["A"]
+        # Shape received in the real incident: B contains the exact A summary.
+        manual = {"schema_version": 1, "profile": original["profile"],
+                  "selected_by": "A_self_single_host", "summaries": {"A": summary, "B": summary}}
+        renamed = copy.deepcopy(original)
+        renamed["summaries"]["B"] = copy.deepcopy(summary)
+        renamed["summaries"]["B"]["member"] = "B"  # relabeling cannot create a second host
+        for name, bad in (("original-incident", manual), ("renamed-copy", renamed)):
+            with self.subTest(name=name), patch.object(r, "_binding", return_value=binding()):
+                write_json(path, bad)
+                target = self.root / f"{name}-receipt.json"
+                with self.assertRaisesRegex(ValueError, "two distinct"):
+                    r.accept(bundle, path, self.root / "repeat", self.root / "A/checks.json", target)
+                self.assertFalse(target.exists())
+
+    def test_accept_recomputes_peer_contract_ranking_and_summary_digests(self):
+        bundle, path = joint_ready(self.root)
+        original = read_json(path)
+        cases = {
+            "missing-schema": lambda x: x.pop("schema_version"),
+            "missing-peer": lambda x: x["summaries"].pop("B"),
+            "wrong-member": lambda x: x["summaries"]["B"].update(member="A"),
+            "empty-fingerprint": lambda x: x["summaries"]["B"]["binding"].update(fingerprint=""),
+            "wrong-source": lambda x: x["summaries"]["B"]["binding"].update(source_revision="older"),
+            "wrong-deps": lambda x: x["summaries"]["B"]["binding"].update(dependencies={"torch": "other"}),
+            "wrong-python": lambda x: x["summaries"]["B"]["binding"].update(python="other"),
+            "wrong-cuda": lambda x: x["summaries"]["B"]["binding"].update(torch_cuda="other"),
+            "wrong-assets": lambda x: x["summaries"]["B"]["assets"].update(head_sha256="c"*64),
+            "wrong-recipe": lambda x: x["summaries"]["B"]["recipe"].update(seed=29),
+            "missing-profile": lambda x: x["summaries"]["B"]["profiles"].pop(x["profile"]),
+            "peer-failed": lambda x: x["summaries"]["B"]["profiles"][x["profile"]].update(passed=False),
+            "string-passed": lambda x: x["summaries"]["B"]["profiles"][x["profile"]].update(passed="false"),
+            "negative-time": lambda x: x["summaries"]["B"]["profiles"][x["profile"]].update(estimated_epoch_seconds=-1),
+            "infinite-time": lambda x: x["summaries"]["B"]["profiles"][x["profile"]].update(estimated_epoch_seconds=float("inf")),
+            "nonpreferred-profile": lambda x: x.update(profile="fp32-m32-w4-e4"),
+            "changed-ranking": lambda x: x.update(ranking=[]),
+            "changed-digest": lambda x: x["summary_digests"].update(B="f"*64),
+            "missing-raw-hash": lambda x: x["summary_hashes"].pop("B"),
+            "wrong-status": lambda x: x.update(status="approved"),
+            "eligible": lambda x: x.update(selection_eligible=True),
+        }
+        for name, mutate in cases.items():
+            bad = copy.deepcopy(original)
+            mutate(bad)
+            write_json(path, bad)
+            target = self.root / f"{name}.json"
+            with self.subTest(name=name), patch.object(r, "_binding", return_value=binding()):
+                with self.assertRaises(ValueError):
+                    r.accept(bundle, path, self.root / "repeat", self.root / "A/checks.json", target)
+                self.assertFalse(target.exists())
+
+    def test_run_rejects_invalid_selection_even_after_receipt_hash_is_rewritten(self):
+        bundle, path = joint_ready(self.root)
+        selection = read_json(path)
+        receipt_path = self.root / "receipt.json"
+        with patch.object(r, "_binding", return_value=binding()):
+            receipt = r.accept(bundle, path, self.root / "repeat", self.root / "A/checks.json", receipt_path)
+            duplicate = copy.deepcopy(selection)
+            duplicate["summaries"]["B"] = copy.deepcopy(duplicate["summaries"]["A"])
+            duplicate["summaries"]["B"]["member"] = "B"
+            duplicate["summary_digests"]["B"] = r.sha256_json(duplicate["summaries"]["B"])
+            failed = copy.deepcopy(selection)
+            failed["summaries"]["B"]["profiles"][failed["profile"]]["passed"] = False
+            failed["summary_digests"]["B"] = r.sha256_json(failed["summaries"]["B"])
+            for name, bad in (("duplicate", duplicate), ("failed-profile", failed)):
+                write_json(path, bad)
+                altered = copy.deepcopy(receipt)
+                altered["selection_sha256"] = r.file_sha256(path)
+                altered["hashes"][str(path)] = altered["selection_sha256"]
+                write_json(receipt_path, altered)
+                with self.subTest(name=name), patch("aic_robust_clip.workflow.train_command") as train:
+                    with self.assertRaises(ValueError):
+                        r.run(bundle, receipt_path, "control")
+                    train.assert_not_called()
+
+    def test_run_requires_explicit_selection_binding_and_matches_receipt_profile(self):
+        bundle, path = joint_ready(self.root)
+        receipt_path = self.root / "receipt.json"
+        with patch.object(r, "_binding", return_value=binding()):
+            receipt = r.accept(bundle, path, self.root / "repeat", self.root / "A/checks.json", receipt_path)
+            for name, mutate in {
+                "legacy": lambda x: x.pop("schema_version"),
+                "missing-path": lambda x: x.pop("selection_path"),
+                "relative-path": lambda x: x.update(selection_path="selection.json"),
+                "missing-digest": lambda x: x.pop("selection_sha256"),
+                "missing-evidence": lambda x: x["hashes"].pop(str(path)),
+                "other-profile": lambda x: x.update(profile="fp32-m32-w4-e4"),
+            }.items():
+                altered = copy.deepcopy(receipt)
+                mutate(altered)
+                write_json(receipt_path, altered)
+                with self.subTest(name=name), patch("aic_robust_clip.workflow.train_command") as train:
+                    with self.assertRaises(ValueError):
+                        r.run(bundle, receipt_path, "control")
+                    train.assert_not_called()
+            write_json(receipt_path, receipt)
+            selection = read_json(path)
+            selection["status"] = "changed"
+            write_json(path, selection)
+            with patch("aic_robust_clip.workflow.train_command") as train:
+                with self.assertRaisesRegex(ValueError, "evidence changed"):
+                    r.run(bundle, receipt_path, "control")
+                train.assert_not_called()
+
+    def test_valid_joint_selection_is_portable_to_b_without_reading_a_host_paths(self):
+        _, path = joint_ready(self.root)
+        bundle = self.root / "B/bundle/bundle.json"
+        selected = read_json(path)
+        cfg = load_config(read_json(bundle)["configs"][selected["profile"]]["control"])
+        for i in range(1, 4):
+            write_json(self.root / f"repeat-b/eval-{i}/benchmark.json", report(cfg, "eval", binding("host-B")))
+        # The peer's original summary file is on another machine, not a prerequisite here.
+        (self.root / "A/summary.json").unlink()
+        with patch.object(r, "_binding", return_value=binding("host-B")):
+            receipt = self.root / "receipt-b.json"
+            r.accept(bundle, path, self.root / "repeat-b", self.root / "B/checks.json", receipt)
+            with patch("aic_robust_clip.workflow.train_command") as train:
+                r.run(bundle, receipt, "control")
+                train.assert_called_once()
 
     def test_failed_candidates_are_retained_and_not_selected(self):
         a = measured(self.root, "A", binding())

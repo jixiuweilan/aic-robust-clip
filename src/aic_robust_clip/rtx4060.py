@@ -254,14 +254,29 @@ def summarize(bundle_path, directory, checks_path, output):
         "estimate_note": "train + dev + two checkpoint writes; excludes cold start; not a time budget"})
 
 
-def select(summary_a, summary_b, output):
-    a, b = read_json(summary_a), read_json(summary_b)
-    if ({a["member"], b["member"]} != {"A", "B"} or a["binding"]["fingerprint"] == b["binding"]["fingerprint"]
+def _selection_contract(summaries):
+    """Recompute the same two-host decision at selection, acceptance and launch."""
+    if not isinstance(summaries, dict) or set(summaries) != {"A", "B"}:
+        raise ValueError("selection requires exactly the A and B summaries")
+    a, b = summaries["A"], summaries["B"]
+    if (a["member"] != "A" or b["member"] != "B"
+            or any(not isinstance(s["binding"]["fingerprint"], str) or not s["binding"]["fingerprint"] for s in (a, b))
+            or a["binding"]["fingerprint"] == b["binding"]["fingerprint"]
             or a["assets"] != b["assets"] or a["recipe"] != b["recipe"]
             or a["binding"]["source_revision"] != current_code_revision()
             or b["binding"]["source_revision"] != current_code_revision()
-            or a["binding"]["dependencies"] != b["binding"]["dependencies"]):
+            or any(a["binding"][key] != b["binding"][key] for key in ("dependencies", "python", "torch_cuda"))):
         raise ValueError("require two distinct matched 4060 hosts, source, dependencies, assets and recipe")
+    for summary in (a, b):
+        if set(summary["profiles"]) != set(PROFILES):
+            raise ValueError("selection requires all six profile outcomes per host")
+        for entry in summary["profiles"].values():
+            if type(entry["passed"]) is not bool:
+                raise ValueError("profile outcome must be a boolean")
+            if entry["passed"]:
+                seconds = entry["estimated_epoch_seconds"]
+                if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0:
+                    raise ValueError("invalid estimated time")
     ranking = []
     for name in PROFILES:
         x, y = a["profiles"][name], b["profiles"][name]
@@ -269,7 +284,7 @@ def select(summary_a, summary_b, output):
             cost = x["estimated_epoch_seconds"] + y["estimated_epoch_seconds"]
             if not math.isfinite(cost) or cost <= 0:
                 raise ValueError("invalid estimated time")
-            ranking.append((cost, name))
+            ranking.append([cost, name])
     if not ranking:
         raise ValueError("no common passing profile; stop formal runs and report")
     ranking.sort()
@@ -277,15 +292,48 @@ def select(summary_a, summary_b, output):
     tied = [(cost, name) for cost, name in ranking if (cost - best) / best < .05]
     _, chosen = min(tied, key=lambda item: (PROFILES[item[1]][2], PROFILES[item[1]][3],
                                            PROFILES[item[1]][1], item[0], item[1]))
-    return _new_json(output, {"profile": chosen, "ranking": ranking,
-        "summaries": {s["member"]: s for s in (a, b)},
-        "summary_hashes": {s["member"]: file_sha256(p) for s, p in ((a, summary_a), (b, summary_b))},
-        "status": "engineering_selection_requires_three_local_eval_windows", "selection_eligible": False})
+    return {"schema_version": 2, "profile": chosen, "ranking": ranking,
+        "summary_digests": {member: sha256_json(summary) for member, summary in summaries.items()},
+        "status": "engineering_selection_requires_three_local_eval_windows", "selection_eligible": False}
+
+
+def _validate_selection(selection):
+    try:
+        contract = _selection_contract(selection["summaries"])
+        if (type(selection["schema_version"]) is not int or selection["selection_eligible"] is not False
+                or any(selection[key] != value for key, value in contract.items())
+                or set(selection["summary_hashes"]) != {"A", "B"}
+                or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                       for value in selection["summary_hashes"].values())):
+            raise ValueError("selection contract/digests/ranking changed; require a fresh two-host selection")
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError("incomplete selection contract; require a fresh two-host selection") from exc
+    return selection
+
+
+def _local_selection_summary(bundle, selection, binding):
+    _validate_selection(selection)
+    summary = selection["summaries"][bundle["member"]]
+    if (summary["binding"] != binding or summary["bundle_digest"] != sha256_json(bundle)
+            or summary["assets"] != bundle["assets"] or summary["recipe"] != bundle["recipe"]
+            or summary["config_digests"] != bundle["config_digests"]):
+        raise ValueError("stale or foreign selection/bundle")
+    return summary
+
+
+def select(summary_a, summary_b, output):
+    summaries = {"A": read_json(summary_a), "B": read_json(summary_b)}
+    try:
+        contract = _selection_contract(summaries)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError("incomplete two-host summaries") from exc
+    return _new_json(output, {**contract, "summaries": summaries,
+        "summary_hashes": {"A": file_sha256(summary_a), "B": file_sha256(summary_b)}})
 
 
 def accept(bundle_path, selection_path, eval_directory, checks_path, output):
     bundle, selection, binding = _bundle(bundle_path), read_json(selection_path), _binding()
-    summary = selection["summaries"][bundle["member"]]
+    summary = _local_selection_summary(bundle, selection, binding)
     checks = read_json(checks_path)
     if (summary["binding"] != binding or checks["binding"] != binding
             or checks["status"] != "passed_zero_skips" or summary["bundle_digest"] != sha256_json(bundle)):
@@ -305,7 +353,9 @@ def accept(bundle_path, selection_path, eval_directory, checks_path, output):
         if report["phase"] != "eval":
             raise ValueError("acceptance requires three independent eval windows")
         hashes[str(path)] = file_sha256(path)
-    return _new_json(output, {"binding": binding, "bundle_digest": sha256_json(bundle), "profile": name,
+    return _new_json(output, {"schema_version": 2,
+        "selection_path": str(Path(selection_path).resolve()), "selection_sha256": file_sha256(selection_path),
+        "binding": binding, "bundle_digest": sha256_json(bundle), "profile": name,
         "config_digests": digests, "hashes": hashes, "status": "accepted_engineering_only",
         "selection_eligible": False, "stop_after_epochs": 3})
 
@@ -313,10 +363,20 @@ def accept(bundle_path, selection_path, eval_directory, checks_path, output):
 def run(bundle_path, receipt_path, role, *, resume=False):
     """One explicit job, pauses after epoch 3; no promotion or continuation loop."""
     bundle, receipt = _bundle(bundle_path), read_json(receipt_path)
-    if (receipt["status"] != "accepted_engineering_only" or receipt["binding"] != _binding()
+    binding = _binding()
+    selection_path = receipt.get("selection_path")
+    if (receipt.get("schema_version") != 2 or not isinstance(selection_path, str)
+            or not Path(selection_path).is_absolute() or not receipt.get("selection_sha256")
+            or receipt.get("hashes", {}).get(selection_path) != receipt["selection_sha256"]):
+        raise ValueError("receipt must explicitly bind a version-2 two-host selection; accept again")
+    if (receipt["status"] != "accepted_engineering_only" or receipt["binding"] != binding
             or receipt["bundle_digest"] != sha256_json(bundle) or receipt["stop_after_epochs"] != 3):
         raise ValueError("new source/dependencies/host require new acceptance")
     _hashes_unchanged(receipt["hashes"])
+    selection = read_json(selection_path)
+    _local_selection_summary(bundle, selection, binding)
+    if receipt["profile"] != selection["profile"]:
+        raise ValueError("receipt profile differs from the joint selection")
     paths = bundle["configs"][receipt["profile"]]
     if {r: sha256_json(load_config(p)) for r, p in paths.items()} != receipt["config_digests"]:
         raise ValueError("accepted configurations changed")

@@ -39,6 +39,11 @@ does not establish submission eligibility. Follow
 `docs/research/submission-gate.md` and retain the leaf's selection evidence.
 This is an internal project rule, not an organizer requirement.
 
+用户于 2026-09-20 明确授权本次一次排行榜占位结果，作为上述内部叶子门槛的
+单次例外；不将该结果标记为已完成优化的叶子。模型先按现有 dev 证据固定，
+test 仅作单模型推理，仍须通过提交格式和覆盖校验。例外不取消比赛规则，
+不自动授权后续占位提交；只生成供用户上传的文件，不代为操作排行榜。
+
 ## Local machine execution limit
 
 User rule established on 2026-09-15: this machine has insufficient GPU memory
@@ -66,6 +71,9 @@ bounded checks that training can start successfully.
   自动提交并推送到 GitHub，无需再次询问。组员直接从 GitHub 查看最新任务说明，
   用户只需发送通知。仅提交本次相关文件，不包含私有回传、数据、权重或检查点；
   不强制推送。推送失败须如实报告，不宣称远端已更新。此规则不授权更新运行中的 T4。
+
+- 用户于 2026-09-20 明确：T4 执行任务指令直接在对话中交付给用户，由用户转交
+  执行 agent，不上传 GitHub。代码修复和组员文档仍按上述规则自动提交、推送。
 
 - 用户于 2026-09-19 明确：不设正式实验的绝对耗时门槛。“一小时一次迭代”是
   尽快获得有效反馈的软目标，不是超时停止、淘汰方法或限制训练预算的条件。
