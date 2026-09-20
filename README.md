@@ -17,10 +17,12 @@ As of 2026-09-17, a separate-machine B01 delivery supports completion of the
 first baseline. Supplementary prediction/cache checks pass; historical test
 logs are unavailable, and the teammate's rerun is reported rather than independently
 verified. The user elected to proceed with these documented limitations.
-2026-09-20 当前状态：两位 4060 组员暂停，T4 高学习率分支 paused@3。
-用户要求先充分研究再继续；最新方案与适用性判断见
-[方法重审：去噪与视觉适配](docs/research/method-review-20260920.md)。
-[原 LoRA 任务](docs/4060-assignment.md)及其操作手册保留为历史安排，暂不执行。
+2026-09-20 当前开发：新增复赛 CE/TURN/FINE/SNSCL 独立入口，支持全视觉微调
+和 Q/V LoRA，完整 30 轮调度，第十轮保存后暂停。
+当前 `blocked_on_round2_assets`，尚无真实复赛资产/机器准入/正式运行证据。
+**组员休息，不准备或发布组员任务，不安排验收或训练。** 本轮仅交付代码、工具和
+[开发验证记录](docs/round2/development.md)。
+[原 LoRA 任务](docs/4060-assignment.md)保留为历史安排，不继续执行。
 The [B04/B03 comparison](docs/next-online-pair.md) is historical; do not repeat
 its ten-epoch baselines for this round.
 

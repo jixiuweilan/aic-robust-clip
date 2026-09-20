@@ -1,0 +1,95 @@
+{
+  "version": "round2-v1",
+  "status": "blocked_on_round2_assets",
+  "recipe": {
+    "stage": "second_round",
+    "seed": 17,
+    "epochs": 30,
+    "pause_after_epoch": 10,
+    "initializer": "HEAD20-GCE",
+    "input_size": 224,
+    "precision": "fp16",
+    "effective_batch": 128,
+    "head_lr": 0.001,
+    "visual_lr": 1e-05,
+    "lora_lr": 0.0001,
+    "auxiliary_lr": 0.001,
+    "weight_decay": 0.0001,
+    "warmup_epochs": 1,
+    "scheduler": "epoch_fraction_cosine",
+    "lora_rank": 4,
+    "lora_alpha": 4,
+    "eval_batch": 64,
+    "scoring_batch": 64,
+    "gmm": {
+      "iterations": 100,
+      "tolerance": 1e-06,
+      "variance_floor": 1e-06,
+      "threshold": 0.6
+    },
+    "snscl": {
+      "warmup_epochs": 5,
+      "threshold": 0.5,
+      "ema": 0.99,
+      "momentum": 0.999,
+      "temperature": 0.07,
+      "queue_capacity": 32,
+      "projection_dim": 128,
+      "contrastive_weight": 0.1,
+      "kl_weight": 0.0001
+    }
+  },
+  "runs": [
+    {
+      "run_id": "T4-0-CE",
+      "group": "t4",
+      "adaptation": "full_visual",
+      "method": "ce"
+    },
+    {
+      "run_id": "T4-1-TURN",
+      "group": "t4",
+      "adaptation": "full_visual",
+      "method": "turn"
+    },
+    {
+      "run_id": "T4-2-FINE",
+      "group": "t4",
+      "adaptation": "full_visual",
+      "method": "fine"
+    },
+    {
+      "run_id": "T4-3-SNSCL",
+      "group": "t4",
+      "adaptation": "full_visual",
+      "method": "snscl"
+    },
+    {
+      "run_id": "4060-A-CE",
+      "group": "4060-a",
+      "adaptation": "lora",
+      "method": "ce"
+    },
+    {
+      "run_id": "4060-A-TURN",
+      "group": "4060-a",
+      "adaptation": "lora",
+      "method": "turn"
+    },
+    {
+      "run_id": "4060-B-CE",
+      "group": "4060-b",
+      "adaptation": "lora",
+      "method": "ce"
+    },
+    {
+      "run_id": "4060-B-FINE",
+      "group": "4060-b",
+      "adaptation": "lora",
+      "method": "fine"
+    }
+  ],
+  "assets": null,
+  "admission": null,
+  "note": "规划清单；使用 round2 prepare 生成可校验的独立配置。"
+}

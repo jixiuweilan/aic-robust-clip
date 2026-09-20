@@ -143,6 +143,12 @@ before acting on them.
 
 ## Official sources
 
+2026-09-20 复赛工程协议：独立 `second_round` 目录，仅使用收到的当轮训练包，
+完整解码、精确重复组划分 train/dev/confirm 约 80/10/10、seed 17。
+这是[项目比较协议](round2/development.md)，不是新增官方规则；如有官方独立验证集或新
+使用限制，先修订协议。当前尚未取得并核验复赛资产，不从公开页面猜测收到的包版本
+或强制图片数量；下载由用户完成。本轮仅安排 train/dev，无 confirm/test 或排行榜提交。
+
 - [Task page](https://www.aicomp.cn/tracks/tracks-1/3714.html)
 - [Challenge-track notice](https://www.aicomp.cn/notice/notice-1/3629.html)
 - [Second-round notice, 2026-09-14](https://www.aicomp.cn/notice/notice-1/5278.html)
