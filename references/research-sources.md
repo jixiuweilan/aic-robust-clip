@@ -1,5 +1,8 @@
 # Research Source Register
 
+2026-09-20 补充：新增 S15–S24 及作者代码核对见
+[本轮方法重审来源登记](research-sources-20260920.md)。下文保留 9 月 15 日阅读深度。
+
 Reviewed **2026-09-15**. `method sections` means relevant equations and setup
 were inspected; it does not mean reproduction. `abstract` supports only the
 high-level contribution. Local availability alone does not establish full review.

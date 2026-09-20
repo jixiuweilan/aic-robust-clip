@@ -17,8 +17,10 @@ As of 2026-09-17, a separate-machine B01 delivery supports completion of the
 first baseline. Supplementary prediction/cache checks pass; historical test
 logs are unavailable, and the teammate's rerun is reported rather than independently
 verified. The user elected to proceed with these documented limitations.
-The current 4060 task is the [LoRA learning-rate comparison](docs/4060-assignment.md),
-with [engineering acceptance and commands](docs/4060-next-round.md).
+2026-09-20 当前状态：两位 4060 组员暂停，T4 高学习率分支 paused@3。
+用户要求先充分研究再继续；最新方案与适用性判断见
+[方法重审：去噪与视觉适配](docs/research/method-review-20260920.md)。
+[原 LoRA 任务](docs/4060-assignment.md)及其操作手册保留为历史安排，暂不执行。
 The [B04/B03 comparison](docs/next-online-pair.md) is historical; do not repeat
 its ten-epoch baselines for this round.
 

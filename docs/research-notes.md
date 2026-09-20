@@ -1,5 +1,10 @@
 # Research Plan: Robust CLIP under Noisy Labels
 
+2026-09-20 最新状态：用户要求先研究再继续，旧学习率任务与续训均暂停。
+当前研究入口为[方法重审](research/method-review-20260920.md)和
+[新增一手来源](../references/research-sources-20260920.md)。下文保留初版设计与当时状态，
+不表示当前实验进度，也不是复工指令。
+
 Design review: **2026-09-15**. Status: **research design complete; experiments
 not run at that review date**. All designs follow [`competition.md`](competition.md).
 
