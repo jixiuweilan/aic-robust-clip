@@ -4,6 +4,10 @@ Retrieved on **2026-09-15**. Files are kept with descriptive ASCII names so
 scripts and remote runners can handle them consistently. Verify bytes with
 [`SHA256SUMS`](SHA256SUMS).
 
+2026-09-20 追加[官方来源复核记录](official/20260920-source-review.md)：记录现行赛题页、
+9 月 14 日复赛通知的 URL、查阅日期与访问限制。该文件是本地编写的核对摘要，
+不是新下载的官方原件；原 PDF 字节及其哈希保持不变。
+
 ## Organizer documents
 
 | Local file | Source | Purpose |

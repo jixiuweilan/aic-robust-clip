@@ -1,8 +1,9 @@
 id,parent,recipe,seeds,epoch_milestones,max_new_runs,status,gate,submission_eligible
-N00,B03,B03,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
-N01,N00,R01,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
-N02,N00,F100,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
-N03,N00,F010,17,3|6|10,1,design_only,engineering_and_metadata_acceptance,false
+N00,B03,B03,17,3|6|10,1,completed_epoch10_control,archived_t4_epoch10_20260919,false
+N01,N00,R01,17,3|6|10,1,frozen_epoch3,no_automatic_resume,false
+N02,N00,F100,17,3|6|10,1,completed_epoch10_not_promoted,below_declared_gain_gate,false
+N03,N00,F010,17,3|6|10,1,completed_epoch10_not_promoted,below_declared_gain_gate_single_placeholder_exception_only,false
+N00_L3E4,N00,B03_lora_lr_3e-4,17,3|6|10,1,paused_epoch3_report_corrections_recorded,epoch6_requires_owner_decision,false
 N10,N02|N03,W+P,17,3|6|10,1,conditional,both_single_modules_pass,false
 N11,N00,posthoc_prior,17,dev_only,0,conditional,train_p95_p5_at_least_1.5_and_logits,false
 N20,N01|N02|N03|N10,selected_method,17,3|6|10,4,conditional,one_survivor_and_parameter_plumbing,false
