@@ -22,7 +22,7 @@
     "eval_batch": 64,
     "scoring_batch": 64,
     "gmm": {
-      "iterations": 100,
+      "iterations": 1000,
       "tolerance": 1e-06,
       "variance_floor": 1e-06,
       "threshold": 0.6

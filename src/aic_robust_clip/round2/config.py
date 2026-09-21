@@ -10,6 +10,7 @@ from ..models.provision import file_sha256, inspect_weights
 from ..data.transforms import ClipTransform
 
 VERSION = "round2-v1"
+GMM_MAX_ITERATIONS = 1000
 RUNS = {"T4-0-CE": ("t4", "full_visual", "ce"), "T4-1-TURN": ("t4", "full_visual", "turn"),
         "T4-2-FINE": ("t4", "full_visual", "fine"), "T4-3-SNSCL": ("t4", "full_visual", "snscl"),
         "4060-A-CE": ("4060-a", "lora", "ce"), "4060-A-TURN": ("4060-a", "lora", "turn"),
@@ -19,7 +20,7 @@ RECIPE = {"stage": "second_round", "seed": 17, "epochs": 30, "pause_after_epoch"
           "head_lr": 1e-3, "visual_lr": 1e-5, "lora_lr": 1e-4, "auxiliary_lr": 1e-3,
           "weight_decay": 1e-4, "warmup_epochs": 1, "scheduler": "epoch_fraction_cosine",
           "lora_rank": 4, "lora_alpha": 4, "eval_batch": 64, "scoring_batch": 64,
-          "gmm": {"iterations": 100, "tolerance": 1e-6, "variance_floor": 1e-6, "threshold": .6},
+          "gmm": {"iterations": GMM_MAX_ITERATIONS, "tolerance": 1e-6, "variance_floor": 1e-6, "threshold": .6},
           "snscl": {"warmup_epochs": 5, "threshold": .5, "ema": .99, "momentum": .999,
                     "temperature": .07, "queue_capacity": 32, "projection_dim": 128,
                     "contrastive_weight": .1, "kl_weight": 1e-4}}

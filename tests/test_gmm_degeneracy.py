@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 
 from aic_robust_clip.contracts import read_json
-from aic_robust_clip.round2 import admission, engine
+from aic_robust_clip.round2 import admission, engine, config
 from aic_robust_clip.round2.methods import MethodError, MethodState, gmm, select
 
 
@@ -87,11 +87,60 @@ class GMMTests(unittest.TestCase):
         x = np.random.default_rng(0).normal(2, .4, 64)
         for _ in range(2):
             with self.assertRaisesRegex(MethodError, "100 iterations") as caught:
-                gmm(x)
+                gmm(x, max_iter=100)
             details = caught.exception.diagnostics
             self.assertEqual((details["reason"], details["iterations"]), ("nonconvergence", 100))
             self.assertEqual(details["initialization"], "quartiles")
             self.assertGreater(abs(details["likelihood_delta"]), 1e-6)
+
+    def test_slow_convergence_170_samples_167_unique_single_fit(self):
+        # Synthetic shape-matched fixture, NOT the unavailable server scores.
+        # Seed17 and three exact duplicates give 170 rows / 167 unique scores.
+        rng = np.random.default_rng(17)
+        x = np.r_[rng.normal(4.117420683496456, np.sqrt(.05493894527176942), 130),
+                  rng.normal(4.560348192428134, np.sqrt(.1636713450248558), 40)]
+        x[-3:] = x[:3]
+        x = (x - x.mean()) * np.sqrt(.11615313786018694 / x.var()) + 4.22
+        self.assertEqual((len(x), len(np.unique(x))), (170, 167))
+        self.assertAlmostEqual(x.var(), .11615313786018694)
+        with self.assertRaisesRegex(MethodError, "100 iterations") as caught:
+            gmm(x, max_iter=100)
+        previous = caught.exception.diagnostics
+        self.assertGreater(previous["likelihood_delta"], 1e-6)
+        self.assertLess(previous["likelihood_delta"], 1.6e-6)
+        details = {}
+        p = gmm(x, diagnostics=details)
+        self.assertEqual(details["max_iter"], 1000)
+        self.assertGreater(details["iterations"], 100)
+        self.assertLessEqual(details["iterations"], 1000)
+        self.assertLessEqual(abs(details["likelihood_delta"]), 1e-6)
+        self.assertEqual(details["initial_means"], previous["initial_means"])
+        self.assertEqual(details["tolerance"], previous["tolerance"])
+        self.assertEqual(details["variance_floor"], previous["variance_floor"])
+        again = {}
+        np.testing.assert_array_equal(p, gmm(x, diagnostics=again))
+        self.assertEqual(details, again)
+        # TURN performs one fit with the declared budget, no retry loop.
+        with patch("aic_robust_clip.round2.methods.gmm", wraps=gmm) as fit:
+            keep, probability, report = select(np.full(170, 10), x, method="turn")
+        fit.assert_called_once()
+        np.testing.assert_array_equal(keep, p >= .6)
+        np.testing.assert_array_equal(probability, p)
+        self.assertEqual(report["10"]["gmm"]["iterations"], details["iterations"])
+
+    def test_iteration_budget_is_bound_to_plan_and_pilot_recipe(self):
+        from aic_robust_clip.preliminary_pilot import pilot_config
+        self.assertEqual(config.GMM_MAX_ITERATIONS, 1000)
+        self.assertEqual(config.RECIPE["gmm"], {"iterations": 1000, "tolerance": 1e-6, "variance_floor": 1e-6, "threshold": .6})
+        plan = read_json(Path(__file__).resolve().parents[1] / "configs/second_round/plan.json")
+        self.assertEqual(plan["recipe"], config.RECIPE)
+        assets = SimpleNamespace(descriptor={"digest": "synthetic"}, head_sha256="synthetic")
+        pilot = pilot_config(Path("/tmp/preliminary/synthetic"), assets, {}, {"digest": "checks"}, {"digest": "profile"})
+        self.assertEqual(pilot["recipe"]["gmm"], config.RECIPE["gmm"])
+        self.assertEqual((pilot["recipe"]["epochs"], pilot["recipe"]["pause_after_epoch"]), (30, 10))
+        for invalid in (0, -1, 1001, True, 1000.0):
+            with self.assertRaisesRegex(MethodError, "iteration|integer"):
+                gmm(np.arange(8), max_iter=invalid)
 
     def test_failure_statistics_are_finite_json_and_do_not_contain_arrays(self):
         for x in (np.full(8, np.nan), np.array([1e308, -1e308] * 4), 1 + np.linspace(0, 1e-8, 16)):
@@ -117,7 +166,10 @@ class GMMTests(unittest.TestCase):
              patch.object(engine, "Trainer"), patch.object(engine, "clock", return_value=0), \
              patch.object(engine.torch.cuda, "reset_peak_memory_stats"), \
              patch.object(engine, "loader_for", return_value=nullcontext(object())), \
-             patch.object(engine, "scoring", return_value=scored):
+             patch.object(engine, "scoring", return_value=scored), \
+             patch("aic_robust_clip.round2.methods.gmm", side_effect=lambda x, **kw: gmm(x, max_iter=100, **kw)):
+            # Deliberately short test budget exercises the real failure path;
+            # production uses one fit with the fixed 1000-update budget.
             root = Path(directory) / "preliminary/profile"
             with self.assertRaises(MethodError):
                 admission._profile_one(None, method="turn", adaptation="lora", microbatch=32, workers=2,

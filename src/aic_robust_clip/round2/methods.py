@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from .config import GMM_MAX_ITERATIONS
 
 
 class MethodError(ValueError):
@@ -14,10 +15,10 @@ class MethodError(ValueError):
         self.diagnostics = copy.deepcopy(diagnostics or {})
 
 
-def gmm(values, *, high=False, max_iter=100, diagnostics=None):
+def gmm(values, *, high=False, max_iter=GMM_MAX_ITERATIONS, diagnostics=None):
     """Two-component EM; tied quantiles use endpoints, never jitter or retries.
 
-    The initial E step is iteration zero. Each of at most 100 M steps is
+    The initial E step is iteration zero. Each of at most 1000 M steps is
     evaluated before convergence is decided, including the final update.
     Diagnostics contain aggregate statistics only, never per-sample scores.
     """
@@ -30,8 +31,8 @@ def gmm(values, *, high=False, max_iter=100, diagnostics=None):
         info.update(status="failed", reason=reason)
         raise MethodError(message, diagnostics=info)
 
-    if type(max_iter) is not int or not 1 <= max_iter <= 100:
-        fail("invalid_iteration_budget", "GMM max_iter must be an integer in [1, 100]")
+    if type(max_iter) is not int or not 1 <= max_iter <= GMM_MAX_ITERATIONS:
+        fail("invalid_iteration_budget", f"GMM max_iter must be an integer in [1, {GMM_MAX_ITERATIONS}]")
     if x.ndim != 1 or not len(x) or not np.isfinite(x).all():
         fail("invalid_scores", "GMM requires a nonempty finite score vector")
     with np.errstate(over="ignore", invalid="ignore"):
