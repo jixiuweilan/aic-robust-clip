@@ -298,6 +298,9 @@ def run(config_path, *, machine, resume=False, startup=False):
 def _run_prepared(config, assets, *, resume=False, startup=False, student_factory=None,
                   expected_stage="second_round", purpose="formal"):
     """Shared numerical loop; public callers own stage and machine admission."""
+    zero_policy = config["recipe"].get("zero_selection_policy", "error")
+    if zero_policy != "error" and expected_stage != "preliminary":
+        raise ValueError("abstention recipe is restricted to the preliminary pilot")
     seed_everything(17)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, processor, _ = (student_factory or student_for)(assets, config["adaptation"])
@@ -310,7 +313,8 @@ def _run_prepared(config, assets, *, resume=False, startup=False, student_factor
         if startup:
             train.records, score.records, dev.records = train.records[:4], score.records[:4], dev.records[:2]
         state = MethodState(config["method"], [r.sample_id for r in train.records],
-                            [train.class_to_index[r.class_id] for r in train.records], len(assets.class_map.id_to_index))
+                            [train.class_to_index[r.class_id] for r in train.records], len(assets.class_map.id_to_index),
+                            zero_selection_policy=zero_policy)
         identity = {"configuration": config["digest"], "source": current_code_revision(), "purpose": "startup" if startup else purpose}
         trainer = Trainer(model, state, identity=identity, device=device, precision="fp32" if startup else "fp16",
                           effective_batch=2 if startup else 128)

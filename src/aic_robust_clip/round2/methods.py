@@ -108,10 +108,43 @@ def fine_scores(features):
     return (x @ vectors[:, -1]) ** 2
 
 
-def select(labels, losses, features=None, *, method):
+def posterior_range_bound(details, *, high=False, threshold=.6):
+    """Exact maximum on the observed score interval, not a grid estimate."""
+    means, variances, weights = (np.asarray(details[k], dtype=np.float64) for k in ("means", "variances", "weights"))
+    lo, hi = details["quantiles"][0], details["quantiles"][-1]
+    if (any(a.shape != (2,) or not np.isfinite(a).all() for a in (means, variances, weights))
+            or (variances <= 0).any() or (weights <= 0).any() or not np.isfinite([lo, hi]).all() or lo > hi):
+        raise MethodError("invalid posterior bound parameters")
+    target = int(np.argmax(means) if high else np.argmin(means))
+    other = 1 - target
+    candidates = [float(lo), float(hi)]
+    # The log odds is quadratic. An interior maximum exists only when the
+    # target component is narrower; otherwise an endpoint is maximal.
+    if variances[target] < variances[other]:
+        vertex = means[target] + (means[target] - means[other]) * variances[target] / (variances[other] - variances[target])
+        if lo <= vertex <= hi:
+            candidates.append(float(vertex))
+    scores = np.asarray(candidates)
+    odds = (np.log(weights[target] / weights[other]) + .5 * np.log(variances[other] / variances[target])
+            - .5 * (scores - means[target]) ** 2 / variances[target]
+            + .5 * (scores - means[other]) ** 2 / variances[other])
+    probability = np.exp(-np.logaddexp(0, -odds))
+    best = int(np.argmax(probability))
+    return {"maximum": float(probability[best]), "score_at_maximum": candidates[best],
+            "threshold": threshold, "threshold_reachable": bool(probability[best] >= threshold)}
+
+
+def validate_zero_selection_policy(method, policy):
+    if policy not in {"error", "retain_observed"} or policy == "retain_observed" and method != "turn":
+        raise MethodError("invalid method/zero-selection policy")
+
+
+def select(labels, losses, features=None, *, method, zero_selection_policy="error"):
+    validate_zero_selection_policy(method, zero_selection_policy)
     labels, losses = np.asarray(labels), np.asarray(losses, dtype=np.float64)
-    if labels.ndim != 1 or losses.shape != labels.shape or not np.isfinite(losses).all():
-        raise MethodError("invalid complete scoring pass")
+    if labels.ndim != 1 or not len(labels) or losses.shape != labels.shape or not np.isfinite(losses).all():
+        raise MethodError("invalid complete scoring pass", diagnostics={"count": int(losses.size),
+            "nonfinite_count": int((~np.isfinite(losses)).sum()), "reason": "invalid_scoring"})
     if method == "snscl":
         details = {"method": method, "scope": "global"}
         probability = gmm(losses, diagnostics=details)  # Paper uses a global loss mixture.
@@ -122,15 +155,38 @@ def select(labels, losses, features=None, *, method):
         scores = fine_scores(np.asarray(features)[indices]) if method == "fine" else losses[indices]
         reason = "fewer_than_8" if len(indices) < 8 else "constant" if np.ptp(scores) <= 1e-12 else None
         if reason:
-            report[str(label)] = {"status": "unfiltered", "reason": reason, "count": len(indices), "selected": len(indices)}
+            report[str(label)] = {"status": "unfiltered", "reason": reason, "count": len(indices), "selected": len(indices),
+                                  "confident_selected": 0, "retained_observed": len(indices)}
             continue
         details = {"method": method, "scope": "observed_class", "class_index": int(label)}
         p = gmm(scores, high=method == "fine", diagnostics=details)
+        if p.shape != scores.shape or not np.isfinite(p).all() or ((p < 0) | (p > 1)).any():
+            raise MethodError("invalid GMM selection probabilities", diagnostics=details)
         keep = p >= .6
+        details.update(posterior_min=float(p.min()), posterior_max=float(p.max()),
+                       above_threshold_count=int(keep.sum()), nonfinite_count=0)
+        if all(key in details for key in ("means", "variances", "weights", "quantiles")):
+            details["score_range_bound"] = posterior_range_bound(details, high=method == "fine")
         if not keep.any():
+            if zero_selection_policy == "retain_observed":
+                # Abstain from filtering; do not relabel or call these trusted.
+                probability[indices] = p
+                report[str(label)] = {"status": "unfiltered", "reason": "no_confident_samples", "count": len(indices),
+                    "selected": len(indices), "confident_selected": 0, "retained_observed": len(indices), "gmm": details}
+                continue
             raise MethodError(f"class {label}: zero selected samples", diagnostics={**details, "status": "failed", "reason": "zero_selected"})
         selected[indices], probability[indices] = keep, p
-        report[str(label)] = {"status": "filtered", "count": len(indices), "selected": int(keep.sum()), "gmm": details}
+        report[str(label)] = {"status": "filtered", "count": len(indices), "selected": int(keep.sum()),
+                             "confident_selected": int(keep.sum()), "retained_observed": 0, "gmm": details}
+    rows = list(report.values())
+    abstained = [r for r in rows if r.get("reason") == "no_confident_samples"]
+    report["summary"] = {"zero_selection_policy": zero_selection_policy, "classes": len(rows), "samples": len(labels),
+        "confident_selected": sum(r["confident_selected"] for r in rows),
+        "retained_observed": sum(r["retained_observed"] for r in rows),
+        "abstained_classes": len(abstained), "abstained_samples": sum(r["count"] for r in abstained),
+        "abstained_class_fraction": len(abstained) / len(rows),
+        "abstained_sample_fraction": sum(r["count"] for r in abstained) / len(labels),
+        "unfitted_classes": sum(r.get("reason") in {"fewer_than_8", "constant"} for r in rows), "nonfinite_count": 0}
     return selected, probability, report
 
 
@@ -227,10 +283,12 @@ class SNSCL(nn.Module):
 
 
 class MethodState:
-    def __init__(self, method, sample_ids, labels, classes):
+    def __init__(self, method, sample_ids, labels, classes, *, zero_selection_policy="error"):
         if method not in {"ce", "turn", "fine", "snscl"} or len(sample_ids) != len(set(sample_ids)) or not sample_ids:
             raise MethodError("invalid method/train IDs")
         self.method, self.ids = method, list(sample_ids)
+        validate_zero_selection_policy(method, zero_selection_policy)
+        self.zero_selection_policy = zero_selection_policy
         self.labels = torch.as_tensor(labels, dtype=torch.long).cpu()
         self.index = {s: i for i, s in enumerate(self.ids)}
         self.observed = F.one_hot(self.labels, classes).float()
@@ -249,7 +307,8 @@ class MethodState:
             raise MethodError("scoring must cover exactly the ordered train IDs")
         previous = self.selected.clone()
         if self.method in {"turn", "fine"} or self.method == "snscl" and completed_epochs >= 5:
-            keep, probability, self.report = select(self.labels.numpy(), losses, features, method=self.method)
+            keep, probability, self.report = select(self.labels.numpy(), losses, features, method=self.method,
+                                                   zero_selection_policy=self.zero_selection_policy)
             self.selected = torch.from_numpy(keep)
             if self.method == "snscl":
                 self.soft, self.weights = corrected_labels(self.soft, torch.as_tensor(probabilities), self.observed,
@@ -258,12 +317,16 @@ class MethodState:
         self.completed_epochs = completed_epochs
 
     def state_dict(self):
-        return {"version": "round2-method-v1", "method": self.method, "ids": self.ids, "labels": self.labels,
+        identity = {"version": "round2-method-v1"} if self.zero_selection_policy == "error" else {
+            "version": "turn-abstain-method-v1", "zero_selection_policy": self.zero_selection_policy}
+        return {**identity, "method": self.method, "ids": self.ids, "labels": self.labels,
                 "soft": self.soft, "weights": self.weights, "selected": self.selected,
                 "completed_epochs": self.completed_epochs, "report": self.report}
 
     def load_state_dict(self, value):
-        if set(value) != set(self.state_dict()) or value["version"] != "round2-method-v1" or value["method"] != self.method or value["ids"] != self.ids or not torch.equal(value["labels"], self.labels):
+        if (set(value) != set(self.state_dict()) or value["version"] != self.state_dict()["version"]
+                or value.get("zero_selection_policy", "error") != self.zero_selection_policy
+                or value["method"] != self.method or value["ids"] != self.ids or not torch.equal(value["labels"], self.labels)):
             raise MethodError("method identity/state missing or incompatible")
         for name in ("soft", "weights", "selected"):
             tensor, reference = value[name], getattr(self, name)

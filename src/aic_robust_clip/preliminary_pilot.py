@@ -19,8 +19,10 @@ from .round2 import admission, engine
 from .round2.config import RECIPE, sealed, stage_path
 from .round2.model import Student
 
-VERSION = "preliminary-turn-pilot-v1"
+VERSION = "preliminary-turn-abstain-pilot-v2"
 PURPOSE = "preliminary_method_validation_only"
+ZERO_SELECTION_POLICY = "retain_observed"
+VARIANT = "TURN-ABSTAIN-B32-v1"
 
 
 def assert_source(ctx):
@@ -76,7 +78,8 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
             result = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT)
         if result.returncode:
             raise ValueError(f"software check {index} failed; see preserved log")
-    startup = [admission.synthetic_check("turn", "lora", device="cuda", precision=precision)
+    startup = [admission.synthetic_check("turn", "lora", device="cuda", precision=precision,
+                                       zero_selection_policy=ZERO_SELECTION_POLICY)
                for precision in ("fp32", "fp16")]
     value = sealed({"version": VERSION, "kind": "pilot_checks", "purpose": PURPOSE,
                     "runtime": admission.runtime_identity(), "suite": read_json(root / "suite.json"), "startup": startup,
@@ -87,7 +90,8 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
 
 def pilot_config(root, assets, runtime, checks, profile):
     recipe = copy.deepcopy(RECIPE)
-    recipe.update(stage="preliminary", initializer="verified_preliminary_HEAD3")
+    recipe.update(stage="preliminary", initializer="verified_preliminary_HEAD3",
+                  zero_selection_policy=ZERO_SELECTION_POLICY, method_variant=VARIANT)
     return sealed({"version": VERSION, "stage": "preliminary", "purpose": PURPOSE, "method": "turn",
         "adaptation": "lora", "group": "preliminary-pilot", "status": "pilot_ready", "recipe": recipe,
         "engineering": {"microbatch": 32, "workers": 2}, "output": str(root / "run"),
@@ -105,9 +109,12 @@ def write_morning_report(root, config, result, replay):
              "checkpoint_sha256": result["checkpoint_sha256"], "best_sha256": result["best_sha256"],
              "replay": replay, "epoch_seconds": [r["epoch_seconds"] for r in rows],
              "selected_for_next_epoch": [r["selected"] for r in rows], "round2_eligible": False,
+             "method_variant": VARIANT, "zero_selection_policy": ZERO_SELECTION_POLICY,
+             "selection_summaries": [r.get("selection", {}).get("summary", {}) for r in rows],
              "comparison": "old ten-epoch CE is contextual only; schedule differs; no causal gain claim"}
     write_json(root / "morning-summary.json", value)
-    lines = ["# 初赛 TURN 夜间验证结果", "", "仅为初赛验证，不能用作复赛初始化或结果。", "",
+    lines = ["# 初赛 TURN-ABSTAIN 验证结果", "", "仅为初赛验证，不能用作复赛初始化或结果。", "",
+             "仅在GMM收敛后零可信样本时弃权筛选、保留原监督；保留数不等于可信数。", "",
              f"完整计划30轮，已完成10轮并暂停；best 轮次：{result['best_epoch']}。",
              f"Best macro recall：{result['best_metrics']['macro_recall']:.6%}；last：{result['last']['macro_recall']:.6%}。",
              "旧 CE 为10轮预算，本任务为30轮预算下的10轮观察点，不能据绝对分数作严格因果对照。", "",
@@ -142,8 +149,9 @@ def run_night(source_config, output):
         # 2 warmup + 10 real updates, full fixed-view scoring and 3 dev windows.
         profile = admission._profile_one(None, method="turn", adaptation="lora", microbatch=32, workers=2,
             machine=source.get("machine_config"), output=root / "profile", eval_windows=3,
-            _assets=assets, _student_factory=student_factory, _stage="preliminary")
-        if profile["status"] != "passed" or profile["runtime"] != runtime or profile["head_sha256"] != head_sha:
+            _assets=assets, _student_factory=student_factory, _stage="preliminary", _zero_selection_policy=ZERO_SELECTION_POLICY)
+        if (profile["status"] != "passed" or profile["runtime"] != runtime or profile["head_sha256"] != head_sha
+                or profile.get("zero_selection_policy") != ZERO_SELECTION_POLICY):
             raise ValueError("pilot profile identity mismatch")
         config = pilot_config(root, assets, runtime, checks, profile)
         write_json(root / "config.json", config)
@@ -174,7 +182,8 @@ def main(argv=None):
         if args.startup_check:
             root = stage_path(args.output, stage="preliminary")
             root.mkdir(parents=True, exist_ok=False)
-            result = admission.synthetic_check("turn", "lora", device=args.device, precision=args.precision)
+            result = admission.synthetic_check("turn", "lora", device=args.device, precision=args.precision,
+                                               zero_selection_policy=ZERO_SELECTION_POLICY)
             write_json(root / "startup.json", {**result, "stage": "preliminary", "status": "startup_only"})
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0

@@ -51,12 +51,13 @@ def tiny_student(adaptation, *, image_size=32):
     return Student(FrozenCLIPEncoder(CLIPModel(config)), 3, adaptation)
 
 
-def synthetic_check(method, adaptation, *, device, precision):
+def synthetic_check(method, adaptation, *, device, precision, zero_selection_policy="error"):
     from .engine import Trainer
     from .methods import MethodState, MethodError
     seed_everything(17)
     student = tiny_student(adaptation)
-    state = MethodState(method, ["synthetic-0", "synthetic-1", "synthetic-2", "synthetic-3"], [0, 1, 2, 0], 3)
+    state = MethodState(method, ["synthetic-0", "synthetic-1", "synthetic-2", "synthetic-3"], [0, 1, 2, 0], 3,
+                        zero_selection_policy=zero_selection_policy)
     trainer = Trainer(student, state, identity={"purpose": "synthetic_startup"}, device=device, precision=precision, effective_batch=2)
     frozen = {k: p.detach().clone() for k, p in student.named_parameters() if not p.requires_grad}
     trainable = {k: p.detach().clone() for k, p in student.named_parameters() if p.requires_grad}
@@ -72,6 +73,7 @@ def synthetic_check(method, adaptation, *, device, precision):
     if not any(not torch.equal(dict(student.named_parameters())[k], v) for k, v in trainable.items()):
         raise ValueError("no student parameter update")
     return {"method": method, "adaptation": adaptation, "precision": precision, "device": device,
+            "zero_selection_policy": zero_selection_policy,
             "updates": 2, "samples": 4, "status": "passed", "evidence": "synthetic_correctness_only"}
 
 
@@ -128,12 +130,14 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
 
 
 def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machine, output, eval_windows=1, barrier=None,
-                 _assets=None, _student_factory=None, _stage="second_round"):
+                 _assets=None, _student_factory=None, _stage="second_round", _zero_selection_policy="error"):
     """Real loaders/model, 2 warmup + 10 measured updates; never resumable."""
     from contextlib import ExitStack
     from .engine import require_machine, student_for, Trainer, loader_for, scoring, clock, atomic_save
     from .methods import MethodState, MethodError
     require_machine(machine, stage=_stage)
+    if _zero_selection_policy != "error" and _stage != "preliminary":
+        raise ValueError("abstention profile is restricted to the preliminary pilot")
     root = stage_path(output, stage=_stage)
     root.mkdir(parents=True, exist_ok=False)
     if (microbatch, workers) not in GRID or eval_windows not in {1, 3}:
@@ -150,7 +154,8 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
             for d in (train, score, dev):
                 stack.callback(d.close)
             ids = [r.sample_id for r in train.records]
-            state = MethodState(method, ids, [train.class_to_index[r.class_id] for r in train.records], len(assets.class_map.id_to_index))
+            state = MethodState(method, ids, [train.class_to_index[r.class_id] for r in train.records], len(assets.class_map.id_to_index),
+                                zero_selection_policy=_zero_selection_policy)
             trainer = Trainer(student, state, identity={"purpose": "profile_only"}, device="cuda", precision="fp16")
             score_loader = stack.enter_context(loader_for(score, batch=64, workers=workers))
             torch.cuda.reset_peak_memory_stats()
@@ -159,6 +164,7 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
                 state.rescore(*scoring(student, score_loader, device="cuda", features_required=method == "fine",
                                       expected_stage=_stage), completed_epochs=5 if method == "snscl" else 0)
             scoring_seconds = clock("cuda") - start
+            write_json(root / "selection.json", state.report)
             selected = copy.copy(train)
             selected.records = tuple(r for r, keep in zip(train.records, state.selected) if keep)
             loader = stack.enter_context(loader_for(selected, batch=microbatch, workers=workers, shuffle=True))
@@ -241,6 +247,7 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
                 raise ValueError("pre-run explicit dev student replay failed")
             stack.close()
         value = sealed({"version": VERSION, "kind": "profile", "status": "passed", "runtime": runtime, "stage": _stage,
+                        "zero_selection_policy": _zero_selection_policy, "selection": state.report,
                         "asset_digest": assets.descriptor["digest"], "head_sha256": head["sha256"],
                         "method": method, "adaptation": adaptation, "microbatch": microbatch, "workers": workers,
                         "warmup": 2, "measured": 10, "train_update_seconds": durations[2:], "eval_seconds": windows,
@@ -254,6 +261,7 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
         write_json(root / "failure.json", sealed({"version": VERSION, "kind": "profile", "status": "failed",
             "runtime": runtime, "method": method, "adaptation": adaptation, "microbatch": microbatch,
             "workers": workers, "error": repr(exc), "auto_retry": False,
+            "zero_selection_policy": _zero_selection_policy,
             "method_failure": isinstance(exc, MethodError),
             "method_diagnostics": exc.diagnostics if isinstance(exc, MethodError) else None}))
         raise
