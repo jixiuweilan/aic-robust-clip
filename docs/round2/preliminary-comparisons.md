@@ -87,3 +87,23 @@ SNSCL合成流程检查第4轮未评分、第5轮评分、第6轮有效队列，
 该流程的可靠性输入为测试注入，不是算法分数证据；GMM本身沿用独立真实数值专项。
 日志：`/tmp/aic-preliminary-matrix-focused-v3.log`、`/tmp/aic-preliminary-matrix-suite.log`。
 新版本的真实CUDA、工程网格和训练均待操作agent在对应机器执行，不宣称已完成准入。
+
+## UUID 准入修复（2026-09-21）
+
+8bb7fcc回传的CE profile通过，但外层准入失败：CUDA命令行传入`GPU-<完整UUID>`，
+PyTorch设备属性的`str(uuid.UUID)`返回不带前缀的UUID，直接比较产生假不匹配。
+这只证明profile和软件检查完成；当时正式epoch尚未启动，不能说正式训练已通过。
+
+修复在独立的`gpu_identity.py`中严格解析完整128位UUID，只在单个身份比较处规范化。
+CUDA分配仍必须带`GPU-`前缀，设备序号、缩写、缺失值、MIG名称和重复物理卡均拒绝。
+原runtime字典、来源/资产摘要、回执内容及历史checkpoint身份不改写、不放宽。
+初赛并发、复赛并发及准入汇总、4060当前/历史失败身份均使用相同边界规则。
+复赛还逐方法核对分配卡，防止四卡集合相同但方法互换。
+
+先将夹具改成真实PyTorch格式后，旧实现产生两个预期错误（T4并发及4060历史核对）；
+随后修复。新增5项专项检查包含`uuid.UUID`对象、错卡/缺失/序号拒绝、大小写重复卡、
+完整准入回执到run入口、来源/资产/配置篡改拒绝和复赛方法错卡拒绝。
+原4060完整准入测试也改用真实格式，保留全部原资产/来源校验。
+全套189项通过，零失败/错误/跳过；compileall、pip check、git diff --check通过。
+测试日志为`/tmp/aic-uuid-before-fix.log`、`/tmp/aic-uuid-focused-v2.log`、
+`/tmp/aic-uuid-full-suite.log`。服务器必须使用新提交重新准入，不能复用8bb7fcc回执。

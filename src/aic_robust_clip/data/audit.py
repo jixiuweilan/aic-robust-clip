@@ -187,6 +187,7 @@ def audit_archive(
     max_members: int | None = None,
     compute_archive_hash: bool = True,
     max_member_bytes: int | None = 64 * 1024 * 1024,
+    member_prefix: str | None = None,
 ) -> AuditReport:
     """Inspect one archive and return a deterministic report.
 
@@ -196,6 +197,9 @@ def audit_archive(
     """
 
     _validate_stage_role(stage, role)
+    if member_prefix is not None and (role != "train" or not isinstance(member_prefix, str)
+                                      or not member_prefix or _member_path(member_prefix) != member_prefix):
+        raise AuditError("member_prefix requires an explicit safe training directory")
     archive_path = Path(path)
     if not archive_path.is_file():
         raise AuditError(f"archive does not exist: {archive_path}")
@@ -243,7 +247,12 @@ def audit_archive(
                 report.failures.append(AuditFailure(normalized, sample_id, "nonimage_member"))
                 continue
             try:
-                class_id = _class_id_for(normalized, role)
+                class_path = normalized
+                if member_prefix is not None:
+                    if not normalized.startswith(member_prefix + "/"):
+                        raise AuditError("training image outside declared member_prefix")
+                    class_path = normalized[len(member_prefix) + 1:]
+                class_id = _class_id_for(class_path, role)
             except AuditError as exc:
                 report.failures.append(AuditFailure(normalized, sample_id, "invalid_layout:" + str(exc)))
                 continue

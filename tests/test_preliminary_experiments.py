@@ -19,7 +19,9 @@ from aic_robust_clip.round2.methods import MethodError
 from test_preliminary_pilot import context
 
 
-RUNTIME = {"host": "fixture-host", "source": "fixture-source", "gpu": {"name": "Tesla T4", "uuid": "GPU-fixture"}}
+UUID_A = "c99db39b-3ee0-d3f4-2639-1141aa73f05d"
+UUID_B = "ca7896b5-7e5f-6488-5440-d7a957758e21"
+RUNTIME = {"host": "fixture-host", "source": "fixture-source", "gpu": {"name": "Tesla T4", "uuid": UUID_A}}
 
 
 def profile(method, assets, runtime=RUNTIME, settings=None, windows=3):
@@ -152,13 +154,13 @@ class PreliminaryExperimentsTests(unittest.TestCase):
         with patch.object(engine, "require_machine"), patch.object(exp.subprocess, "Popen", return_value=process), \
              patch.object(engine, "_run_prepared", side_effect=AssertionError("formal run")):
             with self.assertRaisesRegex(ValueError, "before shared start"):
-                exp.admit_t4(self.source, self.root / "admit-fail", methods=["ce"], gpu_uuids=["GPU-one"], owner="operator")
+                exp.admit_t4(self.source, self.root / "admit-fail", methods=["ce"], gpu_uuids=["GPU-" + UUID_A], owner="operator")
         self.assertFalse((self.root / "admit-fail/barrier/go.json").exists())
         self.assertTrue((self.root / "admit-fail/failure.json").exists())
 
     def test_4060_history_grid_and_admission_never_launch_training(self):
-        runtime = {**RUNTIME, "gpu": {"name": "RTX 4060", "uuid": "GPU-fixture"}}
-        history = {"host": runtime["host"], "gpu_uuid": "GPU-fixture", "original_b04_failure": False,
+        runtime = {**RUNTIME, "gpu": {"name": "RTX 4060", "uuid": UUID_A}}
+        history = {"host": runtime["host"], "gpu_uuid": "GPU-" + UUID_A, "original_b04_failure": False,
                    "reviewer": "operator", "basis": "fixture inventory"}
         for change in ({"host": "other"}, {"original_b04_failure": None}, {"original_b04_failure": True}):
             with self.assertRaises(ValueError):
@@ -192,7 +194,9 @@ class PreliminaryExperimentsTests(unittest.TestCase):
         def child(command, **kwargs):
             method = command[command.index("--method") + 1]
             target = Path(command[command.index("--output") + 1])
-            runtime = {**RUNTIME, "gpu": {"name": "Tesla T4", "uuid": kwargs["env"]["CUDA_VISIBLE_DEVICES"]}}
+            # PyTorch reports uuid.UUID text without the nvidia-smi prefix.
+            uuid_by_method = {"ce": UUID_A, "fine": UUID_B}
+            runtime = {**RUNTIME, "gpu": {"name": "Tesla T4", "uuid": uuid_by_method[method]}}
             write_json(target / "profile/profile.json", profile(method, self.assets, runtime))
             write_json(target / "checks.json", checks(method, runtime))
             write_json(target / "provenance.json", sealed({"assets": self.assets.descriptor, "runtime": runtime,
@@ -200,7 +204,7 @@ class PreliminaryExperimentsTests(unittest.TestCase):
             write_json(root / "barrier" / f"{method}.ready.json", {"uuid": runtime["gpu"]["uuid"]})
             return SimpleNamespace(pid=123, returncode=0, poll=lambda: 0)
         with patch.object(engine, "require_machine"), patch.object(exp.subprocess, "Popen", side_effect=child):
-            result = exp.admit_t4(self.source, root, methods=["ce", "fine"], gpu_uuids=["GPU-one", "GPU-two"], owner="operator")
+            result = exp.admit_t4(self.source, root, methods=["ce", "fine"], gpu_uuids=["GPU-" + UUID_A, "GPU-" + UUID_B], owner="operator")
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["formal_training_started"])
         self.assertEqual(result["overlap_seconds"], 1.)

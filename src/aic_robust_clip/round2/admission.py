@@ -13,6 +13,7 @@ from importlib.metadata import version
 import torch
 from ..contracts import read_json, write_json, sha256_json
 from ..environment import machine_fingerprint
+from ..gpu_identity import normalize_gpu_uuid, cuda_gpu_uuids
 from ..models.provision import file_sha256
 from ..runtime import current_code_revision, seed_everything
 from .config import VERSION, RUNS, RECIPE, sealed, verify_seal, stage_path, load_assets, head_descriptor
@@ -108,12 +109,12 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
         history = read_json(machine_history) if machine_history else None
         if group != "t4" and device == "cuda":
             if (not history or history.get("host") != runtime["host"]
-                    or history.get("gpu_uuid") != runtime["gpu"]["uuid"]
+                    or normalize_gpu_uuid(history.get("gpu_uuid")) != normalize_gpu_uuid(runtime["gpu"]["uuid"])
                     or type(history.get("original_b04_failure")) is not bool
                     or not history.get("reviewer") or not history.get("basis")):
                 raise ValueError("4060 machine history must identify original B04 failure status; unknown is blocked")
         prior = read_json(previous_failure) if previous_failure else None
-        if prior and (prior.get("host") != runtime["host"] or prior.get("gpu_uuid") != runtime.get("gpu", {}).get("uuid")
+        if prior and (prior.get("host") != runtime["host"] or normalize_gpu_uuid(prior.get("gpu_uuid")) != normalize_gpu_uuid(runtime.get("gpu", {}).get("uuid"))
                       or prior.get("test") != "test_verification_cached_only_for_unchanged_file_and_process" or not prior.get("original_evidence_sha256")):
             raise ValueError("original B04 failure machine/evidence identity is incomplete")
         if history and history["original_b04_failure"] and prior is None:
@@ -394,7 +395,7 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
         if group != "t4":
             history = check.get("machine_history")
             if (not history or history.get("host") != check["runtime"]["host"]
-                    or history.get("gpu_uuid") != check["runtime"]["gpu"]["uuid"]
+                    or normalize_gpu_uuid(history.get("gpu_uuid")) != normalize_gpu_uuid(check["runtime"]["gpu"]["uuid"])
                     or type(history.get("original_b04_failure")) is not bool
                     or not history.get("reviewer") or not history.get("basis")
                     or history["original_b04_failure"] and not check.get("previous_failure")):
@@ -407,9 +408,9 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
         raise ValueError("original B04 failure identity/retest evidence required")
     if not owner or len(runtimes) != (4 if group == "t4" else 1):
         raise ValueError("owner and one checks receipt per assigned GPU required")
-    if len({r["gpu"]["uuid"] for r in runtimes}) != len(runtimes):
+    if len({normalize_gpu_uuid(r["gpu"]["uuid"]) for r in runtimes}) != len(runtimes):
         raise ValueError("duplicate GPU UUIDs")
-    if group == "t4" and (len({r["runtime"]["gpu"]["uuid"] for r in selected}) != 4
+    if group == "t4" and (len({normalize_gpu_uuid(r["runtime"]["gpu"]["uuid"]) for r in selected}) != 4
                           or any("T4" not in r["gpu"]["name"] for r in runtimes)):
         raise ValueError("one method on each of four T4 GPUs required")
     if group != "t4" and any("4060" not in r["gpu"]["name"] for r in runtimes):
@@ -433,7 +434,7 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
             raise ValueError("four-task concurrent short window required")
         value = read_json(concurrency)
         verify_seal(value)
-        if value.get("kind") != "concurrency" or value.get("status") != "passed" or value.get("overlap_seconds", 0) <= 0 or value["engineering"] != engineering or value["asset_digest"] != assets.descriptor["digest"] or value["source"] != current_code_revision() or set(value["gpu_uuids"]) != {r["gpu"]["uuid"] for r in runtimes}:
+        if value.get("kind") != "concurrency" or value.get("status") != "passed" or value.get("overlap_seconds", 0) <= 0 or value["engineering"] != engineering or value["asset_digest"] != assets.descriptor["digest"] or value["source"] != current_code_revision() or {normalize_gpu_uuid(u) for u in value["gpu_uuids"]} != {normalize_gpu_uuid(r["gpu"]["uuid"]) for r in runtimes}:
             raise ValueError("invalid four-T4 concurrency evidence")
         evidence.append(concurrency)
         for method, digest in zip(methods_for("t4"), value["profiles"]):
@@ -457,6 +458,7 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
 
 def concurrent(assets, *, machine, choice_path, gpu_uuids, output):
     from .engine import require_machine
+    gpu_uuids = cuda_gpu_uuids(gpu_uuids)
     require_machine(machine)
     if len(gpu_uuids) != 4 or len(set(gpu_uuids)) != 4:
         raise ValueError("four distinct T4 GPU UUIDs required")
@@ -488,8 +490,12 @@ def concurrent(assets, *, machine, choice_path, gpu_uuids, output):
         write_json(barrier / "go.json", {"released": time.time()})
         codes = [p.wait() for p in processes]
         rows = [read_json(root / m / "profile.json") for m in methods_for("t4")] if not any(codes) else []
-        if any(codes) or len(rows) != 4 or {r["runtime"]["gpu"]["uuid"] for r in rows} != set(gpu_uuids):
+        if any(codes) or len(rows) != 4 or {normalize_gpu_uuid(r["runtime"]["gpu"]["uuid"]) for r in rows} != {normalize_gpu_uuid(u) for u in gpu_uuids}:
             raise ValueError(f"concurrent tasks failed: {codes}")
+        for method, uuid, row in zip(methods_for("t4"), gpu_uuids, rows):
+            verify_seal(row)
+            if row["method"] != method or normalize_gpu_uuid(row["runtime"]["gpu"]["uuid"]) != normalize_gpu_uuid(uuid):
+                raise ValueError("concurrent method/GPU assignment mismatch")
         overlap = min(r["train_window_ended"] for r in rows) - max(r["train_window_started"] for r in rows)
         if overlap <= 0:
             raise ValueError("four training windows did not overlap")

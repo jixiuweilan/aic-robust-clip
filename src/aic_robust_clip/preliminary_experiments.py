@@ -20,6 +20,7 @@ import torch
 
 from . import preliminary_pilot as pilot
 from .contracts import read_json, write_json, sha256_json
+from .gpu_identity import normalize_gpu_uuid, cuda_gpu_uuids
 from .models.provision import file_sha256
 from .round2 import admission, engine
 from .round2.config import RECIPE, sealed, verify_seal, stage_path
@@ -137,6 +138,7 @@ def check_software(value, method, runtime):
 
 def admit_t4(source_config, output, *, methods, gpu_uuids, owner):
     """Concurrent profiles only. Never launches training; failed group stops."""
+    gpu_uuids = cuda_gpu_uuids(gpu_uuids)
     if (not owner.strip() or not methods or len(set(methods)) != len(methods)
             or any(m not in METHODS for m in methods) or len(gpu_uuids) != len(methods)
             or len(set(gpu_uuids)) != len(gpu_uuids) or any(not u.startswith("GPU-") for u in gpu_uuids)):
@@ -179,7 +181,7 @@ def admit_t4(source_config, output, *, methods, gpu_uuids, owner):
             verify_seal(row)
             checks_value = read_json(child / "checks.json")
             check_software(checks_value, method, row["runtime"])
-            if (row["runtime"]["gpu"]["uuid"] != uuid or row["method"] != method
+            if (normalize_gpu_uuid(row["runtime"]["gpu"]["uuid"]) != normalize_gpu_uuid(uuid) or row["method"] != method
                     or info["runtime"] != row["runtime"] or info["assets"]["digest"] != row["asset_digest"]
                     or info["source_sha256"] != file_sha256(source_config)):
                 raise ValueError("concurrent profile source/GPU identity mismatch")
@@ -307,13 +309,13 @@ def run(receipt_path, output, *, method, resume=False):
 
 
 def check_history(history, prior, runtime):
-    if (history.get("host") != runtime["host"] or history.get("gpu_uuid") != runtime["gpu"]["uuid"]
+    if (history.get("host") != runtime["host"] or normalize_gpu_uuid(history.get("gpu_uuid")) != normalize_gpu_uuid(runtime["gpu"]["uuid"])
             or type(history.get("original_b04_failure")) is not bool
             or not history.get("reviewer") or not history.get("basis")):
         raise ValueError("4060 history must bind reviewer, basis, host and GPU; unknown is blocked")
     if history["original_b04_failure"] and not prior:
         raise ValueError("original B04 failure evidence/retest required")
-    if prior and (prior.get("host") != runtime["host"] or prior.get("gpu_uuid") != runtime["gpu"]["uuid"]
+    if prior and (prior.get("host") != runtime["host"] or normalize_gpu_uuid(prior.get("gpu_uuid")) != normalize_gpu_uuid(runtime["gpu"]["uuid"])
                   or prior.get("test") != "test_verification_cached_only_for_unchanged_file_and_process"
                   or len(prior.get("original_evidence_sha256", "")) != 64):
         raise ValueError("original B04 failure identity/evidence incomplete")

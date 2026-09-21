@@ -15,14 +15,14 @@ from .config import VERSION, stage_path, sealed, load_assets
 from .engine import require_machine, bundle_for, loader_for, schedule, atomic_save
 
 
-def audit(archive, output, *, source_url, retrieved_at, organizer_version, weights, weight_revision):
+def audit(archive, output, *, source_url, retrieved_at, organizer_version, weights, weight_revision, member_prefix=None):
     archive, root = stage_path(archive), stage_path(output)
     if not source_url.startswith("https://") or not retrieved_at or not organizer_version:
         raise ValueError("provide organizer source URL, retrieval date and received version")
     if root.exists():
         raise FileExistsError(root)
     weight_identity = inspect_weights(weights, weight_revision)
-    report = audit_archive(archive, stage="second_round", role="train", decode=True)
+    report = audit_archive(archive, stage="second_round", role="train", decode=True, member_prefix=member_prefix)
     root.mkdir(parents=True, exist_ok=False)
     write_audit_report(root / "manifest.json", report)
     # Retain the failed audit before refusing any derived assets.
@@ -38,6 +38,8 @@ def audit(archive, output, *, source_url, retrieved_at, organizer_version, weigh
              "archives": {str(archive): file_sha256(archive)}, "weights_path": str(Path(weights).resolve()),
              "weight_revision": weight_revision, "weights": weight_identity,
              "files": {name: file_sha256(root / name) for name in ("manifest.json", "split.json", "class-map.json", "coverage.json")}}
+    if member_prefix is not None:
+        value["train_member_prefix"] = member_prefix
     value = sealed(value)
     write_json(root / "assets.json", value)
     return value

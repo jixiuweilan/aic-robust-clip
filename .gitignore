@@ -22,6 +22,7 @@ venv/
 *.swp
 
 # Local competition assets
+data1/
 data/*
 !data/README.md
 checkpoints/*

@@ -382,7 +382,7 @@ class AdmissionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runtime = {"host": "fixture-host", "source": "fixture-source", "dependencies": {"torch": "fixture"},
-                       "gpu": {"uuid": "fixture-uuid", "name": "RTX 4060", "total_bytes": 100}}
+                       "gpu": {"uuid": "c99db39b-3ee0-d3f4-2639-1141aa73f05d", "name": "RTX 4060", "total_bytes": 100}}
             check_dir = root / "checks"
             check_dir.mkdir()
             for i in range(4):
@@ -391,7 +391,7 @@ class AdmissionTests(unittest.TestCase):
                 "runtime": runtime, "suite": {"tests": 1, "errors": 0, "failures": 0, "skips": 0}, "returncodes": [0] * 4,
                 "startup": [{"method": m, "precision": p, "status": "passed", "updates": 2}
                             for m in ("ce", "turn") for p in ("fp32", "fp16")], "previous_failure": None,
-                "machine_history": {"host": "fixture-host", "gpu_uuid": "fixture-uuid", "original_b04_failure": False,
+                "machine_history": {"host": "fixture-host", "gpu_uuid": "GPU-c99db39b-3ee0-d3f4-2639-1141aa73f05d", "original_b04_failure": False,
                                     "reviewer": "synthetic test", "basis": "synthetic test"},
                 "logs": {f"check-{i}.log": admission.file_sha256(check_dir / f"check-{i}.log") for i in range(4)}})
             write_json(check_dir / "checks.json", check)
@@ -420,7 +420,7 @@ class AdmissionTests(unittest.TestCase):
                               profile_paths=[profiles], final_paths=[final])
                 receipt = admission.admit("fixture", output=root / "receipt.json", **kwargs)
                 admission.validate_receipt(receipt, fixture_assets, live=True)
-                self.assertEqual(receipt["assignments"], {"ce": "fixture-uuid", "turn": "fixture-uuid"})
+                self.assertEqual(receipt["assignments"], {"ce": runtime["gpu"]["uuid"], "turn": runtime["gpu"]["uuid"]})
                 with self.assertRaisesRegex(ValueError, "original B04"):
                     admission.admit("fixture", output=root / "bad.json", previous_failure_required=True, **kwargs)
                 with patch.object(admission, "runtime_identity", return_value={**runtime, "host": "other-host"}):

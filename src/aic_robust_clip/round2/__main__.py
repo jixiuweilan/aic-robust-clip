@@ -19,6 +19,7 @@ def parser():
     audit = sub.add_parser("audit", help="仅审计用户取得的复赛训练 ZIP")
     for name in ("archive", "output", "source-url", "retrieved-at", "organizer-version", "weights", "weight-revision"):
         audit.add_argument("--" + name, required=True)
+    audit.add_argument("--member-prefix", help="训练ZIP内部显式根目录，如train；不改写成员路径或图片")
     for name in ("cache", "init-head"):
         q = sub.add_parser(name)
         q.add_argument("--assets", required=True)
@@ -85,7 +86,8 @@ def main(argv=None):
             value, _ = check_config(args.config, ready=False)
         elif c == "audit":
             value = assets.audit(args.archive, args.output, source_url=args.source_url, retrieved_at=args.retrieved_at,
-                organizer_version=args.organizer_version, weights=args.weights, weight_revision=args.weight_revision)
+                organizer_version=args.organizer_version, weights=args.weights, weight_revision=args.weight_revision,
+                member_prefix=args.member_prefix)
         elif c in {"cache", "init-head"}:
             value = (assets.cache if c == "cache" else assets.init_head)(args.assets, machine=args.machine)
         elif c == "checks":
