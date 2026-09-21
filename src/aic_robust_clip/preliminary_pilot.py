@@ -64,7 +64,9 @@ def student_factory(assets, adaptation):
     return student, bundle.processor, {"sha256": digest}
 
 
-def software_checks(root):
+def software_checks(root, *, method="turn"):
+    if method not in {"ce", "turn", "fine", "snscl"}:
+        raise ValueError("unknown preliminary check method")
     script = '''import json,sys,unittest
 r=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover("tests"))
 with open(sys.argv[1],"w") as f: json.dump({"tests":r.testsRun,"failures":len(r.failures),"errors":len(r.errors),"skips":len(r.skipped)},f)
@@ -78,8 +80,8 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
             result = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT)
         if result.returncode:
             raise ValueError(f"software check {index} failed; see preserved log")
-    startup = [admission.synthetic_check("turn", "lora", device="cuda", precision=precision,
-                                       zero_selection_policy=ZERO_SELECTION_POLICY)
+    startup = [admission.synthetic_check(method, "lora", device="cuda", precision=precision,
+                                       zero_selection_policy=ZERO_SELECTION_POLICY if method == "turn" else "error")
                for precision in ("fp32", "fp16")]
     value = sealed({"version": VERSION, "kind": "pilot_checks", "purpose": PURPOSE,
                     "runtime": admission.runtime_identity(), "suite": read_json(root / "suite.json"), "startup": startup,

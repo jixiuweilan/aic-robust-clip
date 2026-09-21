@@ -172,7 +172,7 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
             if len(loader.order) < 12 * 128:
                 raise ValueError("insufficient selected train samples for fixed profile")
             if barrier:
-                barrier = stage_path(barrier)
+                barrier = stage_path(barrier, stage=_stage)
                 write_json(barrier / f"{method}.ready.json", {"uuid": runtime["gpu"]["uuid"]})
                 while not (barrier / "go.json").is_file():
                     time.sleep(.1)

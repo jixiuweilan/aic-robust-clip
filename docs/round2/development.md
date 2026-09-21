@@ -10,6 +10,10 @@ CUDA 测速或新机器准入，八个 run 尚不能开跑。本机没有下载�
 
 ## 已授权的初赛独立验证
 
+多卡增量入口、同期CE/FINE/SNSCL及4060仅准入的安排见
+[初赛同期对照与机器准备](preliminary-comparisons.md)。旧TURN入口继续保留，
+新增任务使用独立checkout，不更新运行中的任务。
+
 用户已明确授权在复赛资产仍缺失时，使用现有初赛正式 B03/普通 CE 配置做一次
 独立的方法验证。入口为
 `python -m aic_robust_clip.preliminary_pilot`，当前显式变体为 LoRA+TURN-ABSTAIN-B32-v1、microbatch 32、
