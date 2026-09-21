@@ -127,21 +127,22 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
         raise
 
 
-def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machine, output, eval_windows=1, barrier=None):
+def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machine, output, eval_windows=1, barrier=None,
+                 _assets=None, _student_factory=None, _stage="second_round"):
     """Real loaders/model, 2 warmup + 10 measured updates; never resumable."""
     from contextlib import ExitStack
     from .engine import require_machine, student_for, Trainer, loader_for, scoring, clock, atomic_save
     from .methods import MethodState, MethodError
-    require_machine(machine)
-    root = stage_path(output)
+    require_machine(machine, stage=_stage)
+    root = stage_path(output, stage=_stage)
     root.mkdir(parents=True, exist_ok=False)
     if (microbatch, workers) not in GRID or eval_windows not in {1, 3}:
         raise ValueError("invalid fixed engineering window")
     runtime = runtime_identity()
     try:
-        assets = load_assets(assets_path)
+        assets = _assets if _assets is not None else load_assets(assets_path)
         seed_everything(17)
-        student, processor, head = student_for(assets, adaptation)
+        student, processor, head = (_student_factory or student_for)(assets, adaptation)
         with ExitStack() as stack:
             train = assets.dataset("train", processor, online=True)
             score = assets.dataset("train", processor, purpose="scoring")
@@ -155,7 +156,8 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
             torch.cuda.reset_peak_memory_stats()
             start = clock("cuda")
             if method != "ce":
-                state.rescore(*scoring(student, score_loader, device="cuda", features_required=method == "fine"), completed_epochs=5 if method == "snscl" else 0)
+                state.rescore(*scoring(student, score_loader, device="cuda", features_required=method == "fine",
+                                      expected_stage=_stage), completed_epochs=5 if method == "snscl" else 0)
             scoring_seconds = clock("cuda") - start
             selected = copy.copy(train)
             selected.records = tuple(r for r, keep in zip(train.records, state.selected) if keep)
@@ -238,7 +240,7 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
             if not torch.allclose(expected, actual, atol=1e-6, rtol=1e-5) or not torch.equal(expected.argmax(1), actual.argmax(1)):
                 raise ValueError("pre-run explicit dev student replay failed")
             stack.close()
-        value = sealed({"version": VERSION, "kind": "profile", "status": "passed", "runtime": runtime,
+        value = sealed({"version": VERSION, "kind": "profile", "status": "passed", "runtime": runtime, "stage": _stage,
                         "asset_digest": assets.descriptor["digest"], "head_sha256": head["sha256"],
                         "method": method, "adaptation": adaptation, "microbatch": microbatch, "workers": workers,
                         "warmup": 2, "measured": 10, "train_update_seconds": durations[2:], "eval_seconds": windows,

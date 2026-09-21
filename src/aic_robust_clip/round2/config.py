@@ -25,10 +25,11 @@ RECIPE = {"stage": "second_round", "seed": 17, "epochs": 30, "pause_after_epoch"
                     "contrastive_weight": .1, "kl_weight": 1e-4}}
 
 
-def stage_path(path):
+def stage_path(path, *, stage="second_round"):
     path = Path(path).resolve()
-    if "second_round" not in path.parts or "preliminary" in path.parts or "semifinal" in path.parts:
-        raise ValueError(f"isolated second_round path required: {path}")
+    if stage not in {"second_round", "preliminary"} or stage not in path.parts or any(
+            other in path.parts for other in {"preliminary", "second_round", "semifinal"} - {stage}):
+        raise ValueError(f"isolated {stage} path required: {path}")
     return path
 
 

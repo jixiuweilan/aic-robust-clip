@@ -82,10 +82,10 @@ def loader_for(dataset, *, batch, workers=0, shuffle=False):
                                seed=17, pin_memory=workers > 0)
 
 
-def scoring(model, loader, *, device, features_required, max_batches=None):
+def scoring(model, loader, *, device, features_required, max_batches=None, expected_stage="second_round"):
     dataset = loader.dataset
-    if (dataset.stage, dataset.role, dataset.partition, dataset.purpose) != ("second_round", "train", "train", "scoring"):
-        raise MethodError("scoring accepts second_round train only")
+    if (dataset.stage, dataset.role, dataset.partition, dataset.purpose) != (expected_stage, "train", "train", "scoring"):
+        raise MethodError(f"scoring accepts {expected_stage} train only")
     model.eval()
     ids, losses, features, probabilities = [], [], [], []
     loader.reset(0)
@@ -105,8 +105,8 @@ def scoring(model, loader, *, device, features_required, max_batches=None):
     return ids, losses, torch.cat(features).numpy() if features else None, torch.cat(probabilities)
 
 
-def evaluate(model, loader, *, device, classes, training_counts, max_batches=None):
-    if (loader.dataset.stage, loader.dataset.role, loader.dataset.partition) != ("second_round", "train", "dev"):
+def evaluate(model, loader, *, device, classes, training_counts, max_batches=None, expected_stage="second_round"):
+    if (loader.dataset.stage, loader.dataset.role, loader.dataset.partition) != (expected_stage, "train", "dev"):
         raise MethodError("explicit dev replay only; no confirm/test")
     model.eval()
     loader.reset(0)
@@ -261,9 +261,9 @@ class Trainer:
         _restore_rng_state(payload["rng"])
 
 
-def require_machine(machine):
+def require_machine(machine, *, stage="second_round"):
     policy = machine_policy(machine)
-    policy.validate(RunConfig(stage="second_round", execution_mode="formal"))
+    policy.validate(RunConfig(stage=stage, execution_mode="formal"))
     if not torch.cuda.is_available():
         raise ValueError("CUDA training machine required")
 
@@ -290,9 +290,15 @@ def run(config_path, *, machine, resume=False, startup=False):
         raise ValueError(config["status"])
     if not startup:
         require_matching_control(config)
+    return _run_prepared(config, assets, resume=resume, startup=startup)
+
+
+def _run_prepared(config, assets, *, resume=False, startup=False, student_factory=None,
+                  expected_stage="second_round", purpose="formal"):
+    """Shared numerical loop; public callers own stage and machine admission."""
     seed_everything(17)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, processor, _ = student_for(assets, config["adaptation"])
+    model, processor, _ = (student_factory or student_for)(assets, config["adaptation"])
     with ExitStack() as stack:
         train = assets.dataset("train", processor, online=True)
         score = assets.dataset("train", processor, purpose="scoring")
@@ -303,7 +309,7 @@ def run(config_path, *, machine, resume=False, startup=False):
             train.records, score.records, dev.records = train.records[:4], score.records[:4], dev.records[:2]
         state = MethodState(config["method"], [r.sample_id for r in train.records],
                             [train.class_to_index[r.class_id] for r in train.records], len(assets.class_map.id_to_index))
-        identity = {"configuration": config["digest"], "source": current_code_revision(), "purpose": "startup" if startup else "formal"}
+        identity = {"configuration": config["digest"], "source": current_code_revision(), "purpose": "startup" if startup else purpose}
         trainer = Trainer(model, state, identity=identity, device=device, precision="fp32" if startup else "fp16",
                           effective_batch=2 if startup else 128)
         engineering = {"microbatch": 1, "workers": 0} if startup else config["engineering"]
@@ -328,7 +334,8 @@ def run(config_path, *, machine, resume=False, startup=False):
             dev_loader = stack.enter_context(loader_for(dev, batch=64, workers=engineering["workers"]))
             counts = Counter(state.labels.tolist())
             if not resume and state.method in {"turn", "fine"}:
-                state.rescore(*scoring(model, score_loader, device=device, features_required=state.method == "fine"), completed_epochs=0)
+                state.rescore(*scoring(model, score_loader, device=device, features_required=state.method == "fine",
+                                      expected_stage=expected_stage), completed_epochs=0)
             if state.completed_epochs >= 10:
                 raise ValueError("epoch10 pause reached; no continuation authorized in this release")
             for epoch in range(state.completed_epochs, 10):
@@ -343,11 +350,13 @@ def run(config_path, *, machine, resume=False, startup=False):
                 trained = clock(device)
                 scored_this_epoch = state.method in {"turn", "fine"} or state.method == "snscl" and epoch >= 4
                 if scored_this_epoch:
-                    state.rescore(*scoring(model, score_loader, device=device, features_required=state.method == "fine"), completed_epochs=epoch + 1)
+                    state.rescore(*scoring(model, score_loader, device=device, features_required=state.method == "fine",
+                                          expected_stage=expected_stage), completed_epochs=epoch + 1)
                 else:
                     state.completed_epochs = epoch + 1
                 scored = clock(device)
-                evaluation = evaluate(model, dev_loader, device=device, classes=len(assets.class_map.id_to_index), training_counts=counts)
+                evaluation = evaluate(model, dev_loader, device=device, classes=len(assets.class_map.id_to_index),
+                                      training_counts=counts, expected_stage=expected_stage)
                 evaluated = clock(device)
                 metrics = evaluation["metrics"]
                 key = (metrics["macro_recall"], metrics["micro_top1"], -(epoch + 1))
@@ -397,31 +406,37 @@ def run(config_path, *, machine, resume=False, startup=False):
 def replay(config_path, *, machine, output):
     require_machine(machine)
     config, assets = check_config(config_path)
+    return _replay_prepared(config, assets, output=output)
+
+
+def _replay_prepared(config, assets, *, output, student_factory=None, expected_stage="second_round", purpose="formal", device="cuda"):
     root = Path(output)
     root.mkdir(parents=True, exist_ok=False)
     checkpoint = torch.load(Path(config["output"]) / "last.pt", weights_only=False, map_location="cpu")
-    if checkpoint["identity"] != {"configuration": config["digest"], "source": current_code_revision(), "purpose": "formal"}:
+    if checkpoint["identity"] != {"configuration": config["digest"], "source": current_code_revision(), "purpose": purpose}:
         raise ValueError("student export checkpoint identity mismatch")
     epoch = checkpoint["method"]["completed_epochs"]
     reference = torch.load(Path(config["output"]) / f"dev-epoch-{epoch:02d}.pt", weights_only=False, map_location="cpu")
     # Export explicitly excludes text parameters and every auxiliary module.
     exported = {k: v for k, v in checkpoint["student"].items()
                 if k.startswith(("encoder.clip_model.vision_model.", "encoder.clip_model.visual_projection.", "classifier."))}
-    export_identity = {"version": VERSION, "asset_digest": assets.descriptor["digest"], "adaptation": config["adaptation"],
+    export_identity = {"version": VERSION, "stage": expected_stage, "purpose": purpose,
+                       "asset_digest": assets.descriptor["digest"], "adaptation": config["adaptation"],
                        "checkpoint_sha256": file_sha256(Path(config["output"]) / "last.pt")}
     atomic_save({"identity": export_identity, "student": exported}, root / "student.pt")
-    student, processor, _ = student_for(assets, config["adaptation"])
+    student, processor, _ = (student_factory or student_for)(assets, config["adaptation"])
     payload = torch.load(root / "student.pt", weights_only=True, map_location="cpu")
     expected = {k for k in student.state_dict() if k.startswith(("encoder.clip_model.vision_model.", "encoder.clip_model.visual_projection.", "classifier."))}
     if set(payload["student"]) != expected or payload["identity"] != export_identity:
         raise ValueError("exported student identity/parameter coverage mismatch")
     student.load_state_dict({**student.state_dict(), **payload["student"]})
-    student.to("cuda").eval()
+    student.to(device).eval()
     dataset = assets.dataset("dev", processor)
+    training = assets.dataset("train")
     try:
         with loader_for(dataset, batch=64, workers=config["engineering"]["workers"]) as loader:
-            result = evaluate(student, loader, device="cuda", classes=len(assets.class_map.id_to_index),
-                              training_counts=Counter(assets.class_map.index_for(r.class_id) for r in assets.dataset("train").records))
+            result = evaluate(student, loader, device=device, classes=len(assets.class_map.id_to_index), expected_stage=expected_stage,
+                              training_counts=Counter(assets.class_map.index_for(r.class_id) for r in training.records))
         passed = result["predictions"] == reference["predictions"] and torch.allclose(result["logits"], reference["logits"], atol=1e-6, rtol=1e-5)
         report = {"partition": "dev", "passed": passed, "epoch": epoch, "identity": export_identity,
                   "max_abs_logit_difference": float((result["logits"] - reference["logits"]).abs().max()),
@@ -432,3 +447,4 @@ def replay(config_path, *, machine, output):
         return report
     finally:
         dataset.close()
+        training.close()
