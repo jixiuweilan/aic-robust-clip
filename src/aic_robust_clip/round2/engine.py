@@ -59,6 +59,8 @@ def record_failure(root, exc):
     while (root / f"failure-{index:03d}.json").exists():
         index += 1
     value = {"status": "failed", "error": repr(exc), "auto_retry": False}
+    if isinstance(exc, MethodError):
+        value["method_diagnostics"] = exc.diagnostics
     write_json(root / f"failure-{index:03d}.json", value)
     if not (root / "failure.json").exists():
         write_json(root / "failure.json", value)

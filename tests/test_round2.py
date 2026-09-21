@@ -36,8 +36,8 @@ class MethodTests(unittest.TestCase):
                 gmm(bad)
         with self.assertRaisesRegex(MethodError, "converge"):
             gmm(x, max_iter=1)
-        with self.assertRaisesRegex(MethodError, "degenerate"):
-            gmm([0.] * 20 + [1.] * 2)
+        repeated = gmm([0.] * 20 + [1.] * 2)
+        np.testing.assert_array_equal(repeated, [1.] * 20 + [0.] * 2)
 
     def test_fine_geometry_and_classwise_degeneracy(self):
         features = np.array([[1., 0]] * 12 + [[0., 1]] * 8)

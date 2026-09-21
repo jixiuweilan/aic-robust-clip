@@ -9,38 +9,88 @@ from torch.nn import functional as F
 
 
 class MethodError(ValueError):
-    pass
+    def __init__(self, message, *, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = copy.deepcopy(diagnostics or {})
 
 
-def gmm(values, *, high=False, max_iter=100):
-    """Two-component 1D EM, quantile initialization, explicit convergence."""
+def gmm(values, *, high=False, max_iter=100, diagnostics=None):
+    """Two-component EM; tied quantiles use endpoints, never jitter or retries.
+
+    The initial E step is iteration zero. Each of at most 100 M steps is
+    evaluated before convergence is decided, including the final update.
+    Diagnostics contain aggregate statistics only, never per-sample scores.
+    """
     x = np.asarray(values, dtype=np.float64)
-    if x.ndim != 1 or len(x) < 8 or not np.isfinite(x).all() or np.ptp(x) <= 1e-12:
-        raise MethodError("GMM requires >=8 finite, nonconstant scores")
+    info = diagnostics if diagnostics is not None else {}
+    info.update(count=int(x.size), finite_count=int(np.isfinite(x).sum()),
+                iterations=0, max_iter=max_iter, tolerance=1e-6, variance_floor=1e-6)
+
+    def fail(reason, message):
+        info.update(status="failed", reason=reason)
+        raise MethodError(message, diagnostics=info)
+
+    if type(max_iter) is not int or not 1 <= max_iter <= 100:
+        fail("invalid_iteration_budget", "GMM max_iter must be an integer in [1, 100]")
+    if x.ndim != 1 or not len(x) or not np.isfinite(x).all():
+        fail("invalid_scores", "GMM requires a nonempty finite score vector")
+    with np.errstate(over="ignore", invalid="ignore"):
+        variance, span = float(x.var()), float(np.ptp(x))
+    if not np.isfinite([variance, span]).all():
+        fail("nonfinite_statistics", "nonfinite GMM input statistics")
+    unique = len(np.unique(x))
+    info.update(unique_count=unique, duplicate_fraction=1 - unique / len(x),
+                quantiles=np.quantile(x, [0, .25, .5, .75, 1]).tolist(),
+                variance=variance, span=span, variance_below_floor=variance < 1e-6)
+    if len(x) < 8 or span <= 1e-12:
+        fail("fewer_than_8" if len(x) < 8 else "constant", "GMM requires >=8 finite, nonconstant scores")
     means = np.quantile(x, [.25, .75])
-    variances = np.full(2, max(float(x.var()), 1e-6))
+    info["initialization"] = "quartiles"
+    if means[0] == means[1]:
+        # Repeated scores can give identical quartiles on nonconstant data.
+        # Equal means/variances/weights trap EM in an identical-component fit.
+        # Endpoints are deterministic and distinct; all observations keep
+        # their original multiplicity in the likelihood and M steps.
+        means = np.array([x.min(), x.max()])
+        info["initialization"] = "endpoints_for_tied_quartiles"
+    info["initial_means"] = means.tolist()
+    variances = np.full(2, max(variance, 1e-6))
     weights = np.full(2, .5)
-    previous = None
-    for _ in range(max_iter):
+
+    def expectation():
         logp = (np.log(weights) - .5 * np.log(2 * np.pi * variances)
                 - .5 * (x[:, None] - means) ** 2 / variances)
         maximum = logp.max(axis=1, keepdims=True)
         normalizer = maximum + np.log(np.exp(logp - maximum).sum(axis=1, keepdims=True))
         posterior = np.exp(logp - normalizer)
         likelihood = float(normalizer.mean())
-        if not np.isfinite(posterior).all():
-            raise MethodError("nonfinite GMM posterior")
-        if previous is not None and abs(likelihood - previous) <= 1e-6:
-            if abs(means[0] - means[1]) <= 1e-12:
-                raise MethodError("degenerate GMM components have no reliable ordering")
-            return posterior[:, np.argmax(means) if high else np.argmin(means)]
-        mass = posterior.sum(axis=0)
-        if (mass <= 1e-12).any():
-            raise MethodError("collapsed GMM component")
-        means = (posterior * x[:, None]).sum(axis=0) / mass
-        variances = np.maximum((posterior * (x[:, None] - means) ** 2).sum(axis=0) / mass, 1e-6)
-        weights, previous = mass / len(x), likelihood
-    raise MethodError("GMM did not converge in 100 iterations")
+        if not np.isfinite(likelihood) or not np.isfinite(posterior).all():
+            fail("nonfinite_posterior", "nonfinite GMM likelihood/posterior")
+        return posterior, likelihood
+
+    try:
+        with np.errstate(over="raise", invalid="raise", divide="raise"):
+            posterior, previous = expectation()
+            for iteration in range(1, max_iter + 1):
+                mass = posterior.sum(axis=0)
+                if (mass <= 1e-12).any():
+                    fail("collapsed_component", "collapsed GMM component")
+                means = (posterior * x[:, None]).sum(axis=0) / mass
+                variances = np.maximum((posterior * (x[:, None] - means) ** 2).sum(axis=0) / mass, 1e-6)
+                weights = mass / len(x)
+                posterior, likelihood = expectation()
+                delta = likelihood - previous
+                info.update(iterations=iteration, mean_log_likelihood=likelihood, likelihood_delta=delta,
+                            means=means.tolist(), variances=variances.tolist(), weights=weights.tolist())
+                if abs(delta) <= 1e-6:
+                    if abs(means[0] - means[1]) <= 1e-12:
+                        fail("unordered_components", "degenerate GMM components have no reliable ordering")
+                    info["status"] = "converged"
+                    return posterior[:, np.argmax(means) if high else np.argmin(means)]
+                previous = likelihood
+    except FloatingPointError as exc:
+        fail("numerical_error", f"GMM numerical error: {exc}")
+    fail("nonconvergence", f"GMM did not converge in {max_iter} iterations")
 
 
 def fine_scores(features):
@@ -62,8 +112,9 @@ def select(labels, losses, features=None, *, method):
     if labels.ndim != 1 or losses.shape != labels.shape or not np.isfinite(losses).all():
         raise MethodError("invalid complete scoring pass")
     if method == "snscl":
-        probability = gmm(losses)  # Paper uses a global loss mixture.
-        return np.ones(len(labels), dtype=bool), probability, {"scope": "global"}
+        details = {"method": method, "scope": "global"}
+        probability = gmm(losses, diagnostics=details)  # Paper uses a global loss mixture.
+        return np.ones(len(labels), dtype=bool), probability, {"scope": "global", "gmm": details}
     selected, probability, report = np.ones(len(labels), dtype=bool), np.full(len(labels), np.nan), {}
     for label in np.unique(labels):
         indices = np.flatnonzero(labels == label)
@@ -72,12 +123,13 @@ def select(labels, losses, features=None, *, method):
         if reason:
             report[str(label)] = {"status": "unfiltered", "reason": reason, "count": len(indices), "selected": len(indices)}
             continue
-        p = gmm(scores, high=method == "fine")
+        details = {"method": method, "scope": "observed_class", "class_index": int(label)}
+        p = gmm(scores, high=method == "fine", diagnostics=details)
         keep = p >= .6
         if not keep.any():
-            raise MethodError(f"class {label}: zero selected samples")
+            raise MethodError(f"class {label}: zero selected samples", diagnostics={**details, "status": "failed", "reason": "zero_selected"})
         selected[indices], probability[indices] = keep, p
-        report[str(label)] = {"status": "filtered", "count": len(indices), "selected": int(keep.sum())}
+        report[str(label)] = {"status": "filtered", "count": len(indices), "selected": int(keep.sum()), "gmm": details}
     return selected, probability, report
 
 

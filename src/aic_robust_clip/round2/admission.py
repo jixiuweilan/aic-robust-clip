@@ -254,7 +254,8 @@ def _profile_one(assets_path, *, method, adaptation, microbatch, workers, machin
         write_json(root / "failure.json", sealed({"version": VERSION, "kind": "profile", "status": "failed",
             "runtime": runtime, "method": method, "adaptation": adaptation, "microbatch": microbatch,
             "workers": workers, "error": repr(exc), "auto_retry": False,
-            "method_failure": isinstance(exc, MethodError)}))
+            "method_failure": isinstance(exc, MethodError),
+            "method_diagnostics": exc.diagnostics if isinstance(exc, MethodError) else None}))
         raise
 
 
