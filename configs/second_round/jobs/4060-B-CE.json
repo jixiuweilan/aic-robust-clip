@@ -1,0 +1,10 @@
+{
+  "schema": "round2-delivery-v1",
+  "stage": "second_round",
+  "action": "train",
+  "run_id": "4060-B-CE",
+  "config": "/填写私有目录/second_round/4060-b-admission-v1/configs/4060-B-CE.json",
+  "machine": "/填写新checkout/machine-training.json",
+  "gpu_uuid": "GPU-填写本机完整UUID",
+  "output": "/填写私有目录/second_round/4060-B-CE-task-v1"
+}

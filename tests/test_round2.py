@@ -403,7 +403,7 @@ class AdmissionTests(unittest.TestCase):
                             "runtime": runtime, "asset_digest": "fixture-assets", "head_sha256": "fixture-head", "method": m,
                             "adaptation": "lora", "microbatch": b, "workers": w, "peak_occupied_bytes": 80, "total_bytes": 100,
                             "projected_epoch_seconds": 100., "eval_seconds": [1.] * (3 if final else 1),
-                            "dev_student_replay": True, "workers_closed": True})
+                            "dev_student_replay": True, "workers_closed": True, "train_window_started": 2.})
                         path = root / name / f"{m}-{b}-{w}.json"
                         write_json(path, row)
                         rows.append({"path": str(path), "sha256": admission.file_sha256(path)})
@@ -416,8 +416,16 @@ class AdmissionTests(unittest.TestCase):
                  patch.object(admission, "head_descriptor", return_value={"sha256": "fixture-head"}), \
                  patch.object(admission, "current_code_revision", return_value="fixture-source"), \
                  patch.object(admission, "runtime_identity", return_value=runtime):
+                feasibility_paths = []
+                for method in ("ce", "turn"):
+                    path = root / f"feasibility-{method}.json"
+                    write_json(path, config.sealed({"version": config.VERSION, "kind": "feasibility", "status": "passed",
+                        "runtime": runtime, "asset_digest": "fixture-assets", "head_sha256": "fixture-head",
+                        "method": method, "adaptation": "lora", "recipe": config.RECIPE,
+                        "scoring_samples": 300, "updates": 2, "samples": 256, "checkpoint_created": False, "completed_at": 1.}))
+                    feasibility_paths.append(path)
                 kwargs = dict(group="4060-a", owner="synthetic owner", check_paths=[check_dir / "checks.json"],
-                              profile_paths=[profiles], final_paths=[final])
+                              profile_paths=[profiles], final_paths=[final], feasibility_paths=feasibility_paths)
                 receipt = admission.admit("fixture", output=root / "receipt.json", **kwargs)
                 admission.validate_receipt(receipt, fixture_assets, live=True)
                 self.assertEqual(receipt["assignments"], {"ce": runtime["gpu"]["uuid"], "turn": runtime["gpu"]["uuid"]})

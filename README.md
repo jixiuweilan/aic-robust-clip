@@ -17,12 +17,14 @@ As of 2026-09-17, a separate-machine B01 delivery supports completion of the
 first baseline. Supplementary prediction/cache checks pass; historical test
 logs are unavailable, and the teammate's rerun is reported rather than independently
 verified. The user elected to proceed with these documented limitations.
-2026-09-20 当前开发：新增复赛 CE/TURN/FINE/SNSCL 独立入口，支持全视觉微调
-和 Q/V LoRA，完整 30 轮调度，第十轮保存后暂停。
-当前 `blocked_on_round2_assets`，尚无真实复赛资产/机器准入/正式运行证据。
-**组员休息，不准备或发布组员任务，不安排验收或训练。** 本轮仅交付代码、工具和
-[开发验证记录](docs/round2/development.md)。
-[原 LoRA 任务](docs/4060-assignment.md)保留为历史安排，不继续执行。
+2026-09-22 当前任务只面向复赛：四张 T4 负责全视觉 CE/TURN/FINE/SNSCL，
+组员 A/B 的两台 4060 分别执行 LoRA CE→TURN、CE→FINE。保持30轮调度，
+每支第10轮保存后暂停。原始训练包已有接收登记，但此前审计中断，完整资产、
+公共 HEAD20、新机器准入及八个正式 run 尚待服务器/组员执行和回传。
+[本轮组员操作说明](docs/round2/team-execution.md)提供独立复赛交付入口；
+T4 操作指令随本机私有离线包交付，由操作 agent 上传。
+[开发记录](docs/round2/development.md)区分本机合成验证和真实机器证据。
+[原 LoRA 任务](docs/4060-assignment.md)仅保留为历史安排，不继续执行。
 The [B04/B03 comparison](docs/next-online-pair.md) is historical; do not repeat
 its ten-epoch baselines for this round.
 

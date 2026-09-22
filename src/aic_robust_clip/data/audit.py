@@ -14,7 +14,7 @@ import zlib
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Callable
 
 from ..contracts import ClassMap, ContractError, SampleRecord, STAGES, sha256_json, write_json
 
@@ -188,6 +188,8 @@ def audit_archive(
     compute_archive_hash: bool = True,
     max_member_bytes: int | None = 64 * 1024 * 1024,
     member_prefix: str | None = None,
+    progress: Callable[[dict], None] | None = None,
+    expected_sha256: str | None = None,
 ) -> AuditReport:
     """Inspect one archive and return a deterministic report.
 
@@ -212,7 +214,11 @@ def audit_archive(
         infos = archive.infolist()
         if max_members is not None and max_members <= 0:
             raise AuditError("max_members must be positive when a bounded audit is requested")
+        if progress:
+            progress({"phase": "hashing", "total_members": len(infos), "scanned_members": 0})
         archive_identity = _archive_sha256(archive_path) if compute_archive_hash else _partial_identity(archive_path, len(infos))
+        if expected_sha256 is not None and archive_identity != expected_sha256:
+            raise AuditError("archive differs from registered SHA256; decoding not started")
         selected = infos if max_members is None else infos[:max_members]
         complete = max_members is None or len(selected) == len(infos)
         report = AuditReport(
@@ -226,7 +232,10 @@ def audit_archive(
             decode_policy="strict" if not allow_truncated else "truncated-recovery-enabled",
         )
         seen: set[str] = set()
-        for info in selected:
+        for index, info in enumerate(selected):
+            if progress and index % 100 == 0:
+                progress({"phase": "decoding", "total_members": len(infos), "scanned_members": index,
+                          "recorded_images": len(report.records), "failures": len(report.failures)})
             if info.is_dir():
                 continue
             normalized = _member_path(info.filename)
@@ -321,6 +330,10 @@ def audit_archive(
                 )
             except ContractError as exc:
                 report.failures.append(AuditFailure(normalized, sample_id, "invalid_record:" + str(exc)))
+    if progress:
+        progress({"phase": "decoded", "total_members": report.total_members,
+                  "scanned_members": report.scanned_members, "recorded_images": len(report.records),
+                  "failures": len(report.failures)})
     return report
 
 

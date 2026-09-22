@@ -8,3 +8,8 @@
 显式传入 `--assets` 和 `--receipt`；只有该准入组的配置会变为 ready。
 
 开发说明：[复赛开发与验证](../../docs/round2/development.md)。当前组员休息，本表不下发任务。
+
+2026-09-22 新任务模板位于 `jobs/`。模板中的路径/UUID必须由执行人填入私有副本，
+使用 `bash scripts/round2-job.sh validate --job ...` 校验；模板本身不可直接运行。
+当前组员说明见 [team-execution.md](../../docs/round2/team-execution.md)。
+`group` 生成八个配置，但只放行本组；其他组仍保持 blocked。

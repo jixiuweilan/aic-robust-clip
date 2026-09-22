@@ -78,6 +78,9 @@ class Assets:
 
 def load_assets(path, *, verify_archives=False):
     path = stage_path(path)
+    audit_status = read_json(path.parent / "status.json")
+    if audit_status.get("status") != "succeeded" or audit_status.get("exit_code") != 0:
+        raise ValueError("complete successful audit required; interrupted tasks are not assets")
     value = read_json(path)
     verify_seal(value)
     if value.get("version") != VERSION or value.get("stage") != "second_round" or value.get("protocol") != "train-only-grouped-80-10-10-seed17":
@@ -181,6 +184,7 @@ def check_config(path, *, ready=True):
         raise ValueError("configuration admission mismatch")
     if ready:
         from .admission import runtime_identity
-        if receipt["assignments"].get(value["method"]) != runtime_identity()["gpu"]["uuid"]:
+        from ..gpu_identity import normalize_gpu_uuid
+        if normalize_gpu_uuid(receipt["assignments"].get(value["method"])) != normalize_gpu_uuid(runtime_identity()["gpu"]["uuid"]):
             raise ValueError("run must use its assigned GPU UUID")
     return value, assets

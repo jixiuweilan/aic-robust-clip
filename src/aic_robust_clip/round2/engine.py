@@ -285,20 +285,22 @@ def require_matching_control(config):
         raise ValueError("matching local CE control must finish epoch10 before candidate")
 
 
-def run(config_path, *, machine, resume=False, startup=False):
+def run(config_path, *, machine, resume=False, startup=False, stop_after_epoch=10):
     require_machine(machine) if not startup else None
     config, assets = check_config(config_path, ready=not startup)
     if assets is None:
         raise ValueError(config["status"])
     if not startup:
         require_matching_control(config)
-    return _run_prepared(config, assets, resume=resume, startup=startup)
+    return _run_prepared(config, assets, resume=resume, startup=startup, stop_after_epoch=stop_after_epoch)
 
 
 def _run_prepared(config, assets, *, resume=False, startup=False, student_factory=None,
-                  expected_stage="second_round", purpose="formal"):
+                  expected_stage="second_round", purpose="formal", stop_after_epoch=10):
     """Shared numerical loop; public callers own stage and machine admission."""
     zero_policy = config["recipe"].get("zero_selection_policy", "error")
+    if stop_after_epoch not in {1, 5, 6, 10}:
+        raise ValueError("only epoch 1/5/6/10 observation boundaries are supported")
     if zero_policy != "error" and expected_stage != "preliminary":
         raise ValueError("abstention recipe is restricted to the preliminary pilot")
     seed_everything(17)
@@ -344,7 +346,9 @@ def _run_prepared(config, assets, *, resume=False, startup=False, student_factor
                                       expected_stage=expected_stage), completed_epochs=0)
             if state.completed_epochs >= 10:
                 raise ValueError("epoch10 pause reached; no continuation authorized in this release")
-            for epoch in range(state.completed_epochs, 10):
+            if state.completed_epochs >= stop_after_epoch:
+                raise ValueError("observation boundary already reached")
+            for epoch in range(state.completed_epochs, stop_after_epoch):
                 if device == "cuda":
                     torch.cuda.reset_peak_memory_stats()
                 prior_samples, prior_updates = trainer.samples, trainer.updates
@@ -398,7 +402,8 @@ def _run_prepared(config, assets, *, resume=False, startup=False, student_factor
                     "epoch_seconds": saved - began, "checkpoint_sha256": digest})
             # Workers must terminate cleanly before reporting a successful pause.
             stack.close()
-            result = {"status": "paused_at_epoch10", "full_epochs": 30, "completed_epochs": state.completed_epochs,
+            result = {"status": "paused_at_epoch10" if state.completed_epochs == 10 else "paused_at_observation",
+                      "full_epochs": 30, "completed_epochs": state.completed_epochs,
                       "best": trainer.best_key, "last": trainer.history[-1]["metrics"],
                       "best_epoch": -trainer.best_key[2], "best_metrics": trainer.history[-trainer.best_key[2] - 1]["metrics"],
                       "checkpoint_sha256": file_sha256(root / "last.pt"), "best_sha256": file_sha256(root / "best.pt")}

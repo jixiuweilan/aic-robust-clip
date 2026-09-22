@@ -1,0 +1,14 @@
+{
+  "schema": "round2-delivery-v1",
+  "stage": "second_round",
+  "action": "group",
+  "group": "4060-a",
+  "owner": "组员 A",
+  "gpu_uuids": [
+    "GPU-填写本机完整UUID"
+  ],
+  "machine": "/填写新checkout/machine-training.json",
+  "machine_history": "/填写私有目录/second_round/machine-history.json",
+  "assets": "/填写私有目录/second_round/public/assets.json",
+  "output": "/填写私有目录/second_round/4060-a-admission-v1"
+}

@@ -20,6 +20,7 @@ def parser():
     for name in ("archive", "output", "source-url", "retrieved-at", "organizer-version", "weights", "weight-revision"):
         audit.add_argument("--" + name, required=True)
     audit.add_argument("--member-prefix", help="训练ZIP内部显式根目录，如train；不改写成员路径或图片")
+    audit.add_argument("--expected-sha256", required=True, help="已登记的训练包SHA256；解码前核对")
     for name in ("cache", "init-head"):
         q = sub.add_parser(name)
         q.add_argument("--assets", required=True)
@@ -53,6 +54,11 @@ def parser():
     q.add_argument("--profiles", nargs="+", required=True)
     q.add_argument("--group", choices=("t4", "4060-a", "4060-b"), required=True)
     q.add_argument("--output", required=True)
+    q = sub.add_parser("feasibility", help="全train初始评分及两次真实有界更新；不保存权重")
+    for key in ("assets", "machine", "output"):
+        q.add_argument("--" + key, required=True)
+    q.add_argument("--method", choices=("ce", "turn", "fine", "snscl"), required=True)
+    q.add_argument("--adaptation", choices=("full_visual", "lora"), required=True)
     q = sub.add_parser("concurrent")
     for key in ("assets", "machine", "choice", "output"):
         q.add_argument("--" + key, required=True)
@@ -61,7 +67,7 @@ def parser():
     for key in ("assets", "owner", "output"):
         q.add_argument("--" + key, required=True)
     q.add_argument("--group", choices=("t4", "4060-a", "4060-b"), required=True)
-    for key in ("checks", "profiles", "final-profiles"):
+    for key in ("checks", "profiles", "final-profiles", "feasibility"):
         q.add_argument("--" + key, nargs="+", required=True)
     q.add_argument("--concurrency")
     q.add_argument("--previous-failure-required", action="store_true")
@@ -69,6 +75,7 @@ def parser():
     q.add_argument("--config", required=True)
     q.add_argument("--machine", required=True)
     q.add_argument("--resume", action="store_true", help="只恢复本 run 的 last.pt；不能越过第10轮")
+    q.add_argument("--stop-after-epoch", type=int, choices=(1, 5, 6, 10), default=10)
     q = sub.add_parser("replay-dev")
     for key in ("config", "machine", "output"):
         q.add_argument("--" + key, required=True)
@@ -87,7 +94,7 @@ def main(argv=None):
         elif c == "audit":
             value = assets.audit(args.archive, args.output, source_url=args.source_url, retrieved_at=args.retrieved_at,
                 organizer_version=args.organizer_version, weights=args.weights, weight_revision=args.weight_revision,
-                member_prefix=args.member_prefix)
+                member_prefix=args.member_prefix, expected_sha256=args.expected_sha256)
         elif c in {"cache", "init-head"}:
             value = (assets.cache if c == "cache" else assets.init_head)(args.assets, machine=args.machine)
         elif c == "checks":
@@ -111,15 +118,19 @@ def main(argv=None):
                 eval_windows=args.eval_windows, barrier=args.barrier)
         elif c == "choose":
             value = admission.choose(args.profiles, group=args.group, output=args.output)
+        elif c == "feasibility":
+            value = admission.feasibility(args.assets, method=args.method, adaptation=args.adaptation,
+                                          machine=args.machine, output=args.output)
         elif c == "concurrent":
             value = admission.concurrent(args.assets, machine=args.machine, choice_path=args.choice,
                                          gpu_uuids=args.gpu_uuids, output=args.output)
         elif c == "admit":
             value = admission.admit(args.assets, group=args.group, owner=args.owner, check_paths=args.checks,
                 profile_paths=args.profiles, final_paths=args.final_profiles, output=args.output,
-                concurrency=args.concurrency, previous_failure_required=args.previous_failure_required)
+                concurrency=args.concurrency, previous_failure_required=args.previous_failure_required,
+                feasibility_paths=args.feasibility)
         elif c == "run":
-            value = engine.run(args.config, machine=args.machine, resume=args.resume)
+            value = engine.run(args.config, machine=args.machine, resume=args.resume, stop_after_epoch=args.stop_after_epoch)
         else:
             value = engine.replay(args.config, machine=args.machine, output=args.output)
         print(json.dumps(value, ensure_ascii=False, indent=2))

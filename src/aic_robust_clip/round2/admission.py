@@ -32,12 +32,61 @@ def runtime_identity():
         uuid = getattr(p, "uuid", None)
         if uuid is None:
             raise ValueError("CUDA device UUID unavailable; do not substitute a device index")
-        result["gpu"] = {"uuid": str(uuid), "name": p.name, "total_bytes": p.total_memory}
+        result["gpu"] = {"uuid": normalize_gpu_uuid(str(uuid)), "name": p.name, "total_bytes": p.total_memory}
     return result
 
 
 def methods_for(group):
     return [method for _, (g, _, method) in RUNS.items() if g == group]
+
+
+def feasibility(assets_path, *, method, adaptation, machine, output):
+    """Full initial train scoring, then two bounded updates; no checkpoint."""
+    from contextlib import ExitStack
+    from . import engine
+    from .methods import MethodState
+    engine.require_machine(machine)
+    root = stage_path(output)
+    root.mkdir(parents=True, exist_ok=False)
+    try:
+        assets = load_assets(assets_path, verify_archives=True)
+        seed_everything(17)
+        student, processor, head = engine.student_for(assets, adaptation)
+        with ExitStack() as stack:
+            train = assets.dataset("train", processor, online=True)
+            score = assets.dataset("train", processor, purpose="scoring")
+            for dataset in (train, score):
+                stack.callback(dataset.close)
+            state = MethodState(method, [r.sample_id for r in train.records],
+                                [train.class_to_index[r.class_id] for r in train.records], len(assets.class_map.id_to_index))
+            trainer = engine.Trainer(student, state, identity={"purpose": "feasibility_only"}, device="cuda", precision="fp16")
+            with engine.loader_for(score, batch=64, workers=2) as loader:
+                scored = engine.scoring(student, loader, device="cuda", features_required=method == "fine")
+            if method != "ce":
+                state.rescore(*scored, completed_epochs=5 if method == "snscl" else 0)
+            write_json(root / "selection.json", state.report)
+            selected = copy.copy(train)
+            selected.records = tuple(r for r, keep in zip(train.records, state.selected) if keep)
+            if len(selected) < 256:
+                raise ValueError("feasibility requires two full batch128 updates")
+            with engine.loader_for(selected, batch=4, workers=2, shuffle=True) as loader:
+                loader.limit_dispatch(64)
+                trainer.train_epoch(loader, epoch=5 if method == "snscl" else 0, max_updates=2)
+            queue = int(trainer.auxiliary.queue.count.sum()) if trainer.auxiliary else None
+            if trainer.updates != 2 or trainer.samples != 256 or trainer.skipped:
+                raise ValueError("real feasibility requires two successful updates without AMP skips")
+            if method == "snscl" and (not queue or not torch.isfinite(state.soft).all()):
+                raise ValueError("SNSCL active soft-label/momentum/queue path failed")
+        value = sealed({"version": VERSION, "kind": "feasibility", "status": "passed", "runtime": runtime_identity(),
+                        "asset_digest": assets.descriptor["digest"], "head_sha256": head["sha256"],
+                        "method": method, "adaptation": adaptation, "recipe": RECIPE, "scoring_samples": len(score),
+                        "updates": trainer.updates, "samples": trainer.samples, "queue_count": queue,
+                        "checkpoint_created": False, "completed_at": time.time()})
+        write_json(root / "feasibility.json", value)
+        return value
+    except BaseException as exc:
+        engine.record_failure(root, exc)
+        raise
 
 
 def tiny_student(adaptation, *, image_size=32):
@@ -304,6 +353,8 @@ def profile(assets, *, group, machine, output, method=None, engineering=None, ev
 
 
 def choose_common(rows, methods):
+    if any(r.get("method_failure") for r in rows):
+        raise ValueError("method failure stops the entire admission group")
     eligible = []
     for b, w in GRID:
         matching = [r for r in rows if r.get("microbatch") == b and r.get("workers") == w]
@@ -369,7 +420,7 @@ def validate_receipt(receipt, assets, *, live):
 
 
 def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths, output,
-          concurrency=None, previous_failure_required=False):
+          concurrency=None, previous_failure_required=False, feasibility_paths=()):
     assets = load_assets(assets_path, verify_archives=True)
     head = head_descriptor(assets)
     rows = read_profiles(profile_paths)
@@ -416,11 +467,30 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
     if group != "t4" and any("4060" not in r["gpu"]["name"] for r in runtimes):
         raise ValueError("4060 machine required")
     for row in [r for r in rows if r.get("status") == "passed"] + selected:
+        assigned = next(r for r in selected if r["method"] == row["method"])
+        if normalize_gpu_uuid(row["runtime"]["gpu"]["uuid"]) != normalize_gpu_uuid(assigned["runtime"]["gpu"]["uuid"]):
+            raise ValueError("method GPU assignment changed between grid and final windows")
         if row["runtime"] not in runtimes or row["runtime"]["source"] != current_code_revision() or row["asset_digest"] != assets.descriptor["digest"] or row["head_sha256"] != head["sha256"]:
             raise ValueError("profile/checks/asset source identity mismatch")
         if row["adaptation"] != ("full_visual" if group == "t4" else "lora"):
             raise ValueError("wrong adaptation in profile")
-    evidence = list(check_paths) + list(profile_paths) + list(final_paths)
+    feasible = [read_json(p) for p in feasibility_paths]
+    if len(feasible) != len(methods_for(group)) or {r.get("method") for r in feasible} != set(methods_for(group)):
+        raise ValueError("initial real train feasibility required for every method")
+    for row in feasible:
+        verify_seal(row)
+        assigned = next(r for r in selected if r["method"] == row["method"])
+        if (row.get("version") != VERSION or row.get("kind") != "feasibility" or row.get("status") != "passed"
+                or row.get("runtime") != assigned["runtime"] or row.get("recipe") != RECIPE
+                or row.get("asset_digest") != assets.descriptor["digest"] or row.get("head_sha256") != head["sha256"]
+                or row.get("adaptation") != assigned["adaptation"] or row.get("updates") != 2
+                or row.get("samples") != 256 or row.get("scoring_samples", 0) <= 0
+                or not 0 < row.get("completed_at", 0) <= min(
+                    r.get("train_window_started", 0) for r in rows + selected
+                    if r.get("method") == row["method"] and r.get("status") == "passed")
+                or row.get("checkpoint_created") is not False or row["method"] == "snscl" and not row.get("queue_count")):
+            raise ValueError("real train feasibility identity or active update evidence mismatch")
+    evidence = list(check_paths) + list(profile_paths) + list(final_paths) + list(feasibility_paths)
     for path, check in zip(check_paths, checks_values):
         for name, digest in check["logs"].items():
             log = Path(path).parent / name

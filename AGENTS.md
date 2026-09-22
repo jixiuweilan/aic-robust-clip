@@ -67,6 +67,13 @@ bounded checks that training can start successfully.
 
 ## Engineering expectations
 
+- 用户于 2026-09-22 固定复赛分工：4060-A、4060-B 分别由组员 A、B 操作，
+  不再重复询问操作者。A 按 LoRA CE → TURN，B 按 LoRA CE → FINE；
+  每支独立从公共 HEAD20-GCE 初始化，30 轮调度、完成第 10 轮后暂停。
+  T4 四卡由服务器操作 agent 执行：T4-0 先制备公共头，再全视觉 CE；
+  T4-1/2/3 分别全视觉 TURN/FINE/SNSCL，单卡独立运行，不使用 DDP。
+  三个准入组各自通过方可释放；本机软件验证不代表任何组已获准训练。
+
 - 用户于 2026-09-22 明确：初赛训练不再继续，后续工作只面向复赛。
   撤回初赛 CE → candidates、TURN 重试及初赛机器准入安排，不再启动或续跑。
   旧代码、资产和失败证据保留供回归与排查；工程修复可用于复赛，但旧 HEAD3、
