@@ -67,6 +67,8 @@ bounded checks that training can start successfully.
 
 ## Engineering expectations
 
+- 用户于 2026-09-23 要求：每次让用户等待时，都告知预计等待时间；进度或条件变化时更新估计。
+
 - 用户于 2026-09-23 将复赛首批工作改为单张租用 RTX 4090 串行执行，取代下述
   T4/4060 六卡安排。先完成完整资产审计、HEAD20-GCE 和新机准入；首批最多运行
   LoRA CE、全视觉 CE、全视觉 TURN 三支。全视觉 TURN 不准入而 LoRA TURN 准入时，
