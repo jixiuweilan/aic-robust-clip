@@ -16,7 +16,7 @@ from .engine import require_machine, bundle_for, loader_for, schedule, atomic_sa
 
 
 def audit(archive, output, *, source_url, retrieved_at, organizer_version, weights, weight_revision,
-          member_prefix=None, expected_sha256=None):
+          member_prefix=None, expected_sha256=None, exclude_member=None, exclude_byte_sha256=None):
     from .journal import task_journal, atomic_json
     archive, root = stage_path(archive), stage_path(output)
     if archive.name.lower() == "test.zip":
@@ -28,9 +28,11 @@ def audit(archive, output, *, source_url, retrieved_at, organizer_version, weigh
         weight_identity = inspect_weights(weights, weight_revision)
         report = audit_archive(archive, stage="second_round", role="train", decode=True,
                                member_prefix=member_prefix, expected_sha256=expected_sha256,
+                               exclude_member=exclude_member, exclude_byte_sha256=exclude_byte_sha256,
                                progress=lambda event: journal.update(**event))
         write_audit_report(root / "manifest.json", report)
         write_json(root / "decode-failures.json", [f.to_dict() for f in report.failures])
+        write_json(root / "exclusions.json", report.exclusions)
         # Failed or partial reports never become trainable descriptors.
         from ..data.audit import load_manifest
         records = load_manifest(root / "manifest.json", require_complete=True)
@@ -51,9 +53,10 @@ def audit(archive, output, *, source_url, retrieved_at, organizer_version, weigh
                  "source_url": source_url, "retrieved_at": retrieved_at, "organizer_version": organizer_version,
                  "archives": {str(archive): report.archive_identity}, "weights_path": str(Path(weights).resolve()),
                  "weight_revision": weight_revision, "weights": weight_identity,
+                 "exclusions": report.exclusions,
                  "files": {name: file_sha256(root / name) for name in
                            ("manifest.json", "split.json", "class-map.json", "coverage.json",
-                            "duplicates.json", "decode-failures.json")}}
+                            "duplicates.json", "decode-failures.json", "exclusions.json")}}
         if member_prefix is not None:
             value["train_member_prefix"] = member_prefix
         value = sealed(value)

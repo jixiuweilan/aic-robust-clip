@@ -21,6 +21,8 @@ def parser():
         audit.add_argument("--" + name, required=True)
     audit.add_argument("--member-prefix", help="训练ZIP内部显式根目录，如train；不改写成员路径或图片")
     audit.add_argument("--expected-sha256", required=True, help="已登记的训练包SHA256；解码前核对")
+    audit.add_argument("--exclude-member", help="明确授权排除的训练成员路径")
+    audit.add_argument("--exclude-byte-sha256", help="该成员的原始字节 SHA256")
     for name in ("cache", "init-head"):
         q = sub.add_parser(name)
         q.add_argument("--assets", required=True)
@@ -97,7 +99,8 @@ def main(argv=None):
         elif c == "audit":
             value = assets.audit(args.archive, args.output, source_url=args.source_url, retrieved_at=args.retrieved_at,
                 organizer_version=args.organizer_version, weights=args.weights, weight_revision=args.weight_revision,
-                member_prefix=args.member_prefix, expected_sha256=args.expected_sha256)
+                member_prefix=args.member_prefix, expected_sha256=args.expected_sha256,
+                exclude_member=args.exclude_member, exclude_byte_sha256=args.exclude_byte_sha256)
         elif c in {"cache", "init-head"}:
             value = (assets.cache if c == "cache" else assets.init_head)(args.assets, machine=args.machine)
         elif c == "checks":

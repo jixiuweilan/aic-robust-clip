@@ -1,5 +1,7 @@
 """Official train/ wrapper, with original archive/member bytes preserved."""
 import io
+import hashlib
+import importlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +15,46 @@ from aic_robust_clip.contracts import read_json
 
 
 class ArchiveLayoutTests(unittest.TestCase):
+    def test_authorized_single_member_exclusion_is_bound_to_original_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "second_round"
+            root.mkdir()
+            archive = root / "train.zip"
+            bad_member = "train/0000/5.png"
+            with zipfile.ZipFile(archive, "w") as z:
+                for index in range(20):
+                    data = io.BytesIO()
+                    Image.new("RGB", (3, 3), (index, 10, 20)).save(data, format="PNG")
+                    z.writestr(f"train/0000/{index}.png", data.getvalue())
+                    if index == 5:
+                        bad_bytes = data.getvalue()
+            original_sha = assets.file_sha256(archive)
+            byte_sha = hashlib.sha256(bad_bytes).hexdigest()
+            audit_module = importlib.import_module("aic_robust_clip.data.audit")
+            decode = audit_module._decode_pixels
+
+            def decode_one(raw, **kwargs):
+                if raw == bad_bytes:
+                    raise SyntaxError("not a TIFF file")
+                return decode(raw, **kwargs)
+
+            with patch.object(audit_module, "_decode_pixels", side_effect=decode_one):
+                with patch.object(assets, "inspect_weights", return_value={"digest": "synthetic"}):
+                    result = assets.audit(archive, root / "audit", source_url="https://organizer.invalid/synthetic",
+                        retrieved_at="synthetic", organizer_version="synthetic", weights="unused",
+                        weight_revision="unused", member_prefix="train", expected_sha256=original_sha,
+                        exclude_member=bad_member, exclude_byte_sha256=byte_sha)
+                with self.assertRaisesRegex(AuditError, "exclusion was not verified"):
+                    audit_archive(archive, stage="second_round", role="train", member_prefix="train",
+                        exclude_member=bad_member, exclude_byte_sha256="0" * 64)
+            report = read_json(root / "audit/manifest.json")
+            self.assertEqual(len(report["records"]), 19)
+            self.assertEqual(report["failures"], [])
+            self.assertEqual(result["exclusions"], read_json(root / "audit/exclusions.json"))
+            self.assertEqual(result["exclusions"][0]["member_path"], bad_member)
+            self.assertEqual(result["exclusions"][0]["byte_sha256"], byte_sha)
+            self.assertEqual(assets.file_sha256(archive), original_sha)
+
     def test_pillow_exif_syntax_error_is_recorded_without_stopping_audit(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "train.zip"

@@ -11,6 +11,9 @@ FINE、SNSCL 和旧 T4/4060 任务不在本批执行。代码、数据、权重�
 将固定提交的离线源码包传到服务器，核对 SHA256 后放到新 checkout；
 将已有 `train.zip` 放到私有 `second_round` 目录，核对摘要
 `11b70e8b86e7b093cfeb117f5a8422b38c0f7011e41344cc14ae80bc29f3d319`。
+2026-09-23 完整严格审计发现仅 `train/0249/2daac9914a1a43918148491e37591b02.jpg`
+的 EXIF 无法解析；用户明确决定不使用这张训练图。原 ZIP 保留，审计仍核对该成员
+字节并记录排除，其他失败照常阻止公共资产。新审计任务须填写下方两个排除字段。
 官方 OpenAI CLIP ViT-B/32 快照也经私有渠道传入，其目录须含
 `official-weight-manifest.json`。不读取或传输 `test.zip`。
 
@@ -40,6 +43,8 @@ nvidia-smi --query-gpu=uuid,name,memory.total --format=csv
   "archive": "/私有目录/second_round/train.zip",
   "expected_sha256": "11b70e8b86e7b093cfeb117f5a8422b38c0f7011e41344cc14ae80bc29f3d319",
   "member_prefix": "train",
+  "exclude_member": "train/0249/2daac9914a1a43918148491e37591b02.jpg",
+  "exclude_byte_sha256": "a2470e3be087d39563d41978d988cf618932e6ba3177da224ac5ce4ef49752d5",
   "source_url": "https://www.aicomp.cn/tracks/tracks-1/3714.html",
   "retrieved_at": "2026-09-21",
   "organizer_version": "2026-09-21-received-second-round-train",

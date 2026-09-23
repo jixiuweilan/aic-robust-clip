@@ -104,6 +104,11 @@ def load_assets(path, *, verify_archives=False):
         if target.parent != path.parent or file_sha256(target) != digest:
             raise ValueError("asset metadata file hash mismatch")
     records = load_manifest(path.parent / "manifest.json", require_complete=True)
+    if "exclusions" in value:
+        exclusions = read_json(path.parent / "exclusions.json")
+        excluded_paths = {e["member_path"] for e in exclusions}
+        if exclusions != value["exclusions"] or any(r.member_path in excluded_paths for r in records):
+            raise ValueError("training exclusion does not match asset records")
     if not records or any(r.stage != "second_round" or r.role != "train" or r.decode_status != "decoded" for r in records):
         raise ValueError("only fully decoded second-round training records permitted")
     for archive, digest in value["archives"].items():

@@ -53,6 +53,7 @@ class AuditReport:
     decode_policy: str
     records: list[SampleRecord] = field(default_factory=list)
     failures: list[AuditFailure] = field(default_factory=list)
+    exclusions: list[dict[str, str]] = field(default_factory=list)
     nonimage_members: list[str] = field(default_factory=list)
     unsafe_members: list[str] = field(default_factory=list)
     schema_version: str = "1.0"
@@ -81,6 +82,7 @@ class AuditReport:
             "manifest_digest": self.manifest_digest,
             "records": [record.to_dict() for record in sorted(self.records, key=lambda item: item.sample_id)],
             "failures": [failure.to_dict() for failure in sorted(self.failures, key=lambda item: (item.member_path, item.reason))],
+            "exclusions": self.exclusions,
             "nonimage_members": sorted(self.nonimage_members),
             "unsafe_members": sorted(self.unsafe_members),
         }
@@ -190,6 +192,8 @@ def audit_archive(
     member_prefix: str | None = None,
     progress: Callable[[dict], None] | None = None,
     expected_sha256: str | None = None,
+    exclude_member: str | None = None,
+    exclude_byte_sha256: str | None = None,
 ) -> AuditReport:
     """Inspect one archive and return a deterministic report.
 
@@ -202,6 +206,11 @@ def audit_archive(
     if member_prefix is not None and (role != "train" or not isinstance(member_prefix, str)
                                       or not member_prefix or _member_path(member_prefix) != member_prefix):
         raise AuditError("member_prefix requires an explicit safe training directory")
+    if (exclude_member is None) != (exclude_byte_sha256 is None):
+        raise AuditError("excluded training member requires its byte SHA256")
+    if exclude_member is not None and (role != "train" or _member_path(exclude_member) != exclude_member
+                                       or len(exclude_byte_sha256) != 64):
+        raise AuditError("invalid excluded training member")
     archive_path = Path(path)
     if not archive_path.is_file():
         raise AuditError(f"archive does not exist: {archive_path}")
@@ -305,6 +314,11 @@ def audit_archive(
                     decode_status = "crc_verified"
             except (AuditError, OSError, RuntimeError, SyntaxError, zipfile.BadZipFile) as exc:
                 reason = str(exc)
+                if (normalized == exclude_member and byte_digest == exclude_byte_sha256
+                        and isinstance(exc, SyntaxError)):
+                    report.exclusions.append({"member_path": normalized, "sample_id": sample_id,
+                                              "byte_sha256": byte_digest, "reason": reason})
+                    continue
                 if decode_status == "unchecked":
                     decode_status = "failed"
                 report.failures.append(AuditFailure(normalized, sample_id, reason))
@@ -330,6 +344,8 @@ def audit_archive(
                 )
             except ContractError as exc:
                 report.failures.append(AuditFailure(normalized, sample_id, "invalid_record:" + str(exc)))
+    if exclude_member is not None and len(report.exclusions) != 1:
+        raise AuditError("authorized training exclusion was not verified")
     if progress:
         progress({"phase": "decoded", "total_members": report.total_members,
                   "scanned_members": report.scanned_members, "recorded_images": len(report.records),

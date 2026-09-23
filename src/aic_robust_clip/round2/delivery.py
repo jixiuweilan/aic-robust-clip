@@ -32,6 +32,8 @@ def validate_job(job):
         digest = job["expected_sha256"]
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError("填写已登记的 train.zip SHA256")
+        if bool(job.get("exclude_member")) != bool(job.get("exclude_byte_sha256")):
+            raise ValueError("排除训练图片须同时填写路径和字节 SHA256")
         for name in ("source_url", "retrieved_at", "organizer_version", "weights", "weight_revision", "machine"):
             if not job.get(name):
                 raise ValueError(f"缺少 {name}")
@@ -122,6 +124,9 @@ def execute(job_path):
                 args += ["--" + key.replace("_", "-"), job[key]]
             if job.get("member_prefix"):
                 args += ["--member-prefix", job["member_prefix"]]
+            if job.get("exclude_member"):
+                args += ["--exclude-member", job["exclude_member"],
+                         "--exclude-byte-sha256", job["exclude_byte_sha256"]]
             step("audit", args)
             for command in ("cache", "init-head"):
                 step(command, [command, "--assets", target / "assets.json", "--machine", job["machine"]], job.get("gpu_uuid"))
