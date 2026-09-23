@@ -220,14 +220,14 @@ class AssetConfigTests(unittest.TestCase):
                          organizer_version="synthetic-only", weights=root / "weights", weight_revision="a" * 40)
         return root / "assets/assets.json", identity
 
-    def test_prepare_is_metadata_only_and_eight_blocked_configs(self):
+    def test_prepare_is_metadata_only_and_all_blocked_configs(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "second_round/configs"
             with patch.object(engine, "student_for", side_effect=AssertionError("allocated model")), \
                  patch.object(assets, "cache", side_effect=AssertionError("built cache")), \
                  patch.object(assets, "init_head", side_effect=AssertionError("trained head")):
                 rows = config.prepare_configs(output)
-                self.assertEqual(len(rows), 8)
+                self.assertEqual(len(rows), len(config.RUNS))
                 self.assertTrue(all(r["status"] == "blocked_on_round2_assets" for r in rows))
                 for row in rows:
                     path = output / (row["run_id"] + ".json")
@@ -440,23 +440,26 @@ class AdmissionTests(unittest.TestCase):
 
     def test_candidate_requires_completed_matching_local_control(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            candidate = {"group": "4060-a", "method": "turn", "output": str(root / "4060-A-TURN"),
-                         "asset_digest": "a", "head_sha256": "h", "receipt_digest": "r", "engineering": {},
-                         "recipe": config.RECIPE, "adaptation": "lora"}
-            control = root / "4060-A-CE"
-            with self.assertRaises(FileNotFoundError):
+            for group, ce, turn, adaptation in (("4060-a", "4060-A-CE", "4060-A-TURN", "lora"),
+                                                 ("cloud4090-lora", "C4090-LORA-CE", "C4090-LORA-TURN", "lora"),
+                                                 ("cloud4090-full", "C4090-FULL-CE", "C4090-FULL-TURN", "full_visual")):
+                root = Path(directory) / group
+                candidate = {"group": group, "method": "turn", "output": str(root / turn),
+                             "asset_digest": "a", "head_sha256": "h", "receipt_digest": "r", "engineering": {},
+                             "recipe": config.RECIPE, "adaptation": adaptation}
+                control = root / ce
+                with self.assertRaises(FileNotFoundError):
+                    engine.require_matching_control(candidate)
+                write_json(control / "resolved.json", candidate)
+                digest = engine.atomic_save({"fixture": True}, control / "last.pt")
+                write_json(control / "result.json", {"status": "paused_at_epoch10", "completed_epochs": 9, "checkpoint_sha256": digest})
+                with self.assertRaisesRegex(ValueError, "finish epoch10"):
+                    engine.require_matching_control(candidate)
+                write_json(control / "result.json", {"status": "paused_at_epoch10", "completed_epochs": 10, "checkpoint_sha256": digest})
                 engine.require_matching_control(candidate)
-            write_json(control / "resolved.json", candidate)
-            digest = engine.atomic_save({"fixture": True}, control / "last.pt")
-            write_json(control / "result.json", {"status": "paused_at_epoch10", "completed_epochs": 9, "checkpoint_sha256": digest})
-            with self.assertRaisesRegex(ValueError, "finish epoch10"):
-                engine.require_matching_control(candidate)
-            write_json(control / "result.json", {"status": "paused_at_epoch10", "completed_epochs": 10, "checkpoint_sha256": digest})
-            engine.require_matching_control(candidate)
-            write_json(control / "resolved.json", {**candidate, "head_sha256": "HEAD3"})
-            with self.assertRaisesRegex(ValueError, "identity differs"):
-                engine.require_matching_control(candidate)
+                write_json(control / "resolved.json", {**candidate, "head_sha256": "HEAD3"})
+                with self.assertRaisesRegex(ValueError, "identity differs"):
+                    engine.require_matching_control(candidate)
 
 
 if __name__ == "__main__":

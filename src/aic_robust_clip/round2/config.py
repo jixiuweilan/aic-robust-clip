@@ -14,7 +14,19 @@ GMM_MAX_ITERATIONS = 1000
 RUNS = {"T4-0-CE": ("t4", "full_visual", "ce"), "T4-1-TURN": ("t4", "full_visual", "turn"),
         "T4-2-FINE": ("t4", "full_visual", "fine"), "T4-3-SNSCL": ("t4", "full_visual", "snscl"),
         "4060-A-CE": ("4060-a", "lora", "ce"), "4060-A-TURN": ("4060-a", "lora", "turn"),
-        "4060-B-CE": ("4060-b", "lora", "ce"), "4060-B-FINE": ("4060-b", "lora", "fine")}
+        "4060-B-CE": ("4060-b", "lora", "ce"), "4060-B-FINE": ("4060-b", "lora", "fine"),
+        "C4090-LORA-CE": ("cloud4090-lora", "lora", "ce"),
+        "C4090-LORA-TURN": ("cloud4090-lora", "lora", "turn"),
+        "C4090-FULL-CE": ("cloud4090-full", "full_visual", "ce"),
+        "C4090-FULL-TURN": ("cloud4090-full", "full_visual", "turn")}
+CLOUD_GROUPS = {"cloud4090-lora", "cloud4090-full"}
+GROUPS = {group for group, _, _ in RUNS.values()}
+
+
+def adaptation_for(group):
+    if group not in GROUPS:
+        raise ValueError("unknown round2 admission group")
+    return "full_visual" if group in {"t4", "cloud4090-full"} else "lora"
 RECIPE = {"stage": "second_round", "seed": 17, "epochs": 30, "pause_after_epoch": 10,
           "initializer": "HEAD20-GCE", "input_size": 224, "precision": "fp16", "effective_batch": 128,
           "head_lr": 1e-3, "visual_lr": 1e-5, "lora_lr": 1e-4, "auxiliary_lr": 1e-3,
@@ -146,7 +158,7 @@ def prepare_configs(output, assets_path=None, receipt_path=None):
     root.mkdir(parents=True, exist_ok=False)
     configs = []
     for name, (group, adaptation, method) in RUNS.items():
-        applies = receipt and receipt["group"] == group
+        applies = receipt and receipt["group"] == group and method in receipt["assignments"]
         status = "blocked_on_round2_assets" if assets is None else "ready" if applies else "blocked_on_machine_admission"
         config = {"version": VERSION, "run_id": name, "group": group, "adaptation": adaptation, "method": method,
                   "recipe": RECIPE, "status": status, "assets": str(assets.path) if assets else None,

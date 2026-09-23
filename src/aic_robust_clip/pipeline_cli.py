@@ -31,7 +31,7 @@ def doctor_main(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--bind-training", type=Path,
-                        help="explicitly enroll a separate CUDA-visible RTX 4060 or Tesla T4 training host")
+                        help="explicitly enroll a separate CUDA-visible RTX 4060, RTX 4090 or Tesla T4 training host")
     parser.add_argument("--record-lock", type=Path, help="record installed dependencies, not GPU-validation success")
     args = parser.parse_args(argv)
     def action():

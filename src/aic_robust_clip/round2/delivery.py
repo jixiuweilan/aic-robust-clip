@@ -11,7 +11,7 @@ from ..contracts import read_json, write_json
 from ..gpu_identity import cuda_gpu_uuids
 from ..models.provision import file_sha256
 from ..runtime import current_code_revision
-from .config import RUNS, RECIPE, stage_path
+from .config import RUNS, RECIPE, CLOUD_GROUPS, GROUPS, adaptation_for, stage_path
 from .journal import atomic_json, task_journal
 
 SCHEMA = "round2-delivery-v1"
@@ -37,12 +37,14 @@ def validate_job(job):
                 raise ValueError(f"缺少 {name}")
     elif job["action"] in {"checks", "group"}:
         group = job["group"]
-        if group not in {"t4", "4060-a", "4060-b"}:
+        if group not in GROUPS:
             raise ValueError("未知准入组")
+        from .admission import methods_for
+        methods_for(group, job.get("methods"))
         uuids = cuda_gpu_uuids(job["gpu_uuids"])
         if len(uuids) != (4 if group == "t4" else 1):
             raise ValueError("准入组 GPU 数量错误")
-        if group != "t4" and not job.get("machine_history"):
+        if group in {"4060-a", "4060-b"} and not job.get("machine_history"):
             raise ValueError("4060 必须提供 B04 机器历史核对记录")
         if job["action"] == "group":
             stage_path(job["assets"])
@@ -129,27 +131,29 @@ def execute(job_path):
                         "head": head_descriptor(assets), "source": current_code_revision()})
         elif job["action"] in {"checks", "group"}:
             group = job["group"]
+            from .admission import methods_for
+            methods = methods_for(group, job.get("methods"))
             uuids = cuda_gpu_uuids(job["gpu_uuids"])
             checks = []
             # Existing checks may be reused only if admit verifies current source and runtime.
             for index, uuid in enumerate(uuids):
                 target = root / f"checks-{index}"
                 args = ["checks", "--group", group, "--output", target]
+                if group in CLOUD_GROUPS:
+                    args += ["--methods", *methods]
                 for key in ("machine_history", "previous_failure"):
                     if job.get(key):
                         args += ["--" + key.replace("_", "-"), job[key]]
                 step(f"checks-{index}", args, uuid)
                 checks.append(target / "checks.json")
             if job["action"] == "group":
-                from .admission import methods_for
-                methods = methods_for(group)
                 assigned = dict(zip(methods, uuids if group == "t4" else uuids * len(methods)))
                 common = ["--assets", job["assets"], "--machine", job["machine"]]
                 feasibility = []
                 for method in methods:
                     target = root / f"feasibility-{method}"
                     step(f"feasibility-{method}", ["feasibility", *common, "--method", method,
-                         "--adaptation", "full_visual" if group == "t4" else "lora", "--output", target], assigned[method])
+                         "--adaptation", adaptation_for(group), "--output", target], assigned[method])
                     feasibility.append(target / "feasibility.json")
                 profiles, finals = [], []
                 for phase, collection in (("grid", profiles), ("final", finals)):
@@ -164,7 +168,10 @@ def execute(job_path):
                         if any(row.get("method_failure") for row in read_profiles([collection[-1]])):
                             raise ValueError("方法数值/筛选失败，停止整个准入组")
                     if phase == "grid":
-                        step("choose", ["choose", "--group", group, "--profiles", *profiles, "--output", root / "choice.json"])
+                        args = ["choose", "--group", group, "--profiles", *profiles, "--output", root / "choice.json"]
+                        if group in CLOUD_GROUPS:
+                            args += ["--methods", *methods]
+                        step("choose", args)
                 if group == "t4":
                     step("concurrent", ["concurrent", *common, "--choice", root / "choice.json", "--gpu-uuids", *uuids,
                                         "--output", root / "concurrent"])
@@ -173,6 +180,8 @@ def execute(job_path):
                         "--feasibility", *feasibility, "--output", root / "admission.json"]
                 if group == "t4":
                     args += ["--concurrency", root / "concurrent/concurrency.json"]
+                if group in CLOUD_GROUPS:
+                    args += ["--methods", *methods]
                 step("admit", args)
                 step("prepare", ["prepare", "--assets", job["assets"], "--receipt", root / "admission.json",
                                  "--output", root / "configs"])

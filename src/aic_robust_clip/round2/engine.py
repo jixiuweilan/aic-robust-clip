@@ -271,10 +271,11 @@ def require_machine(machine, *, stage="second_round"):
 
 
 def require_matching_control(config):
-    if config.get("group") not in {"4060-a", "4060-b"} or config["method"] == "ce":
+    if config.get("group") not in {"4060-a", "4060-b", "cloud4090-lora", "cloud4090-full"} or config["method"] == "ce":
         return
     from ..contracts import read_json
-    name = "4060-A-CE" if config["group"] == "4060-a" else "4060-B-CE"
+    name = {"4060-a": "4060-A-CE", "4060-b": "4060-B-CE",
+            "cloud4090-lora": "C4090-LORA-CE", "cloud4090-full": "C4090-FULL-CE"}[config["group"]]
     root = Path(config["output"]).parent / name
     control = read_json(root / "resolved.json")
     for field in ("asset_digest", "head_sha256", "receipt_digest", "engineering", "recipe", "adaptation"):

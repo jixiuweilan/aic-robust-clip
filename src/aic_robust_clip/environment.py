@@ -18,7 +18,7 @@ DEVELOPMENT_HOST = "d18bf1f8c8a9065559750bd412c310cf69f122a8e10be14035c8764462a1
 
 # Match model names, not arbitrary numeric substrings. Both old desktop/laptop
 # 4060 bindings remain supported; a visible T4 is the newly approved target.
-APPROVED_TRAINING_GPU_PATTERN = re.compile(r"\b(?:RTX 4060|Tesla T4|NVIDIA T4)\b")
+APPROVED_TRAINING_GPU_PATTERN = re.compile(r"\b(?:RTX 4060|RTX 4090|Tesla T4|NVIDIA T4)\b")
 
 
 def machine_fingerprint():
@@ -69,7 +69,7 @@ def bind_training(path):
         raise RuntimeLimitError("this development host cannot be enrolled for formal training")
     gpu_name = report.get("gpu", {}).get("name", "")
     if not report["cuda_available"] or not APPROVED_TRAINING_GPU_PATTERN.search(gpu_name):
-        raise RuntimeLimitError("enrollment requires an approved CUDA training GPU (RTX 4060 or Tesla T4)")
+        raise RuntimeLimitError("enrollment requires an approved CUDA training GPU (RTX 4060, RTX 4090 or Tesla T4)")
     if Path(path).exists():
         raise FileExistsError(path)
     write_json(path, {"role": "training", "fingerprint": report["fingerprint"], "preflight": report})

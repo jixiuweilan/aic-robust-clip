@@ -22,24 +22,27 @@ import test_round2 as fixtures
 UUID = "c99db39b-3ee0-d3f4-2639-1141aa73f05d"
 
 
-def evidence(root, a, runtime):
+def evidence(root, a, runtime, *, group="4060-a", methods=("ce", "turn")):
+    methods = list(methods)
+    adaptation = config.adaptation_for(group)
     check = root / "checks"
     check.mkdir()
     for index in range(4):
         (check / f"check-{index}.log").write_text("synthetic evidence fixture\n")
-    write_json(check / "checks.json", config.sealed({"version": config.VERSION, "kind": "checks", "group": "4060-a",
+    write_json(check / "checks.json", config.sealed({"version": config.VERSION, "kind": "checks", "group": group,
+        "methods": methods,
         "device": "cuda", "runtime": runtime, "suite": {"tests": 1, "errors": 0, "failures": 0, "skips": 0},
         "returncodes": [0] * 4, "startup": [{"method": m, "precision": p, "status": "passed", "updates": 2}
-            for m in ("ce", "turn") for p in ("fp32", "fp16")], "previous_failure": None,
-        "machine_history": {"host": runtime["host"], "gpu_uuid": "GPU-" + UUID, "original_b04_failure": False,
-                            "reviewer": "synthetic", "basis": "generated fixture"},
+            for m in methods for p in ("fp32", "fp16")], "previous_failure": None,
+        "machine_history": ({"host": runtime["host"], "gpu_uuid": "GPU-" + UUID, "original_b04_failure": False,
+                            "reviewer": "synthetic", "basis": "generated fixture"} if group == "4060-a" else None),
         "logs": {f"check-{i}.log": file_sha256(check / f"check-{i}.log") for i in range(4)}}))
     identity = {"version": config.VERSION, "status": "passed", "runtime": runtime,
-                "asset_digest": a.descriptor["digest"], "head_sha256": config.head_descriptor(a)["sha256"], "adaptation": "lora"}
+                "asset_digest": a.descriptor["digest"], "head_sha256": config.head_descriptor(a)["sha256"], "adaptation": adaptation}
     paths = []
     for name, grid in (("grid", admission.GRID), ("final", [(4, 2)])):
         entries = []
-        for method in ("ce", "turn"):
+        for method in methods:
             for b, w in grid:
                 path = root / name / f"{method}-{b}-{w}.json"
                 write_json(path, config.sealed({**identity, "kind": "profile", "method": method, "microbatch": b, "workers": w,
@@ -50,12 +53,12 @@ def evidence(root, a, runtime):
         write_json(path, config.sealed({"version": config.VERSION, "kind": "profile_grid", "rows": entries}))
         paths.append(path)
     feasible = []
-    for method in ("ce", "turn"):
+    for method in methods:
         path = root / f"feasibility-{method}.json"
         write_json(path, config.sealed({**identity, "kind": "feasibility", "method": method, "recipe": config.RECIPE,
             "scoring_samples": 30, "samples": 256, "updates": 2, "checkpoint_created": False, "completed_at": 1.}))
         feasible.append(path)
-    return dict(group="4060-a", owner="synthetic", check_paths=[check / "checks.json"],
+    return dict(group=group, owner="synthetic", check_paths=[check / "checks.json"], methods=methods,
                 profile_paths=[paths[0]], final_paths=[paths[1]], feasibility_paths=feasible)
 
 
@@ -139,7 +142,7 @@ class Round2DeliveryTests(unittest.TestCase):
             path = target / "assets/assets.json"
             manifest_bytes = (path.parent / "manifest.json").read_bytes()
             runtime = {"host": "synthetic-host", "source": current_code_revision(), "dependencies": {"torch": "synthetic"},
-                       "gpu": {"uuid": UUID, "name": "RTX 4060", "total_bytes": 100}}
+                       "gpu": {"uuid": UUID, "name": "NVIDIA GeForce RTX 4090", "total_bytes": 100}}
             with patch.dict(os.environ, {"AIC_ARCHIVE_LOCATIONS": str(mapping)}), \
                  patch.object(config, "inspect_weights", return_value=identity), \
                  patch.object(admission, "runtime_identity", return_value=runtime):
@@ -148,7 +151,7 @@ class Round2DeliveryTests(unittest.TestCase):
                 state = copy.deepcopy(initial.encoder.clip_model.state_dict())
                 digest = engine.atomic_save(initial.classifier.state_dict(), a.root / "HEAD20-GCE/head.pt")
                 write_json(a.root / "HEAD20-GCE/head.json", {"identity": a.head_identity(), "sha256": digest})
-                kwargs = evidence(root, a, runtime)
+                kwargs = evidence(root, a, runtime, group="cloud4090-full")
                 with self.assertRaisesRegex(ValueError, "feasibility"):
                     admission.admit(path, output=root / "bad-admission.json", **{**kwargs, "feasibility_paths": []})
                 receipt = admission.admit(path, output=root / "admission.json", **kwargs)
@@ -156,7 +159,7 @@ class Round2DeliveryTests(unittest.TestCase):
                 receipt = config.sealed({**config.verify_seal(receipt), "assignments": {"ce": "GPU-" + UUID.upper(), "turn": UUID}})
                 write_json(root / "admission.json", receipt)
                 config.prepare_configs(root / "configs", path, root / "admission.json")
-                cfg_path = root / "configs/4060-A-CE.json"
+                cfg_path = root / "configs/C4090-FULL-CE.json"
                 cfg, _ = config.check_config(cfg_path)
                 def bundle(_):
                     fresh = admission.tiny_student("full_visual", image_size=224)
@@ -186,6 +189,39 @@ class Round2DeliveryTests(unittest.TestCase):
                 with patch.object(admission, "runtime_identity", return_value={**runtime, "host": "other-machine"}):
                     with self.assertRaisesRegex(ValueError, "machine/GPU"):
                         config.check_config(cfg_path)
+
+    def test_cloud4090_ce_only_admission_does_not_release_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "second_round"
+            root.mkdir()
+            path, identity = fixtures.AssetConfigTests().fixtures(root)
+            runtime = {"host": "synthetic-host", "source": current_code_revision(), "dependencies": {"torch": "synthetic"},
+                       "gpu": {"uuid": UUID, "name": "NVIDIA GeForce RTX 4090", "total_bytes": 100}}
+            with patch.object(config, "inspect_weights", return_value=identity), \
+                 patch.object(admission, "runtime_identity", return_value=runtime):
+                a = config.load_assets(path, verify_archives=True)
+                (a.root / "HEAD20-GCE").mkdir()
+                digest = engine.atomic_save({"head": torch.ones(1)}, a.root / "HEAD20-GCE/head.pt")
+                write_json(a.root / "HEAD20-GCE/head.json", {"identity": a.head_identity(), "sha256": digest})
+                kwargs = evidence(root, a, runtime, group="cloud4090-lora", methods=("ce",))
+                receipt = admission.admit(path, output=root / "admission.json", **kwargs)
+                self.assertEqual(receipt["assignments"], {"ce": UUID})
+                config.prepare_configs(root / "configs", path, root / "admission.json")
+                ce, _ = config.check_config(root / "configs/C4090-LORA-CE.json")
+                self.assertEqual(ce["status"], "ready")
+                turn, _ = config.check_config(root / "configs/C4090-LORA-TURN.json", ready=False)
+                self.assertEqual(turn["status"], "blocked_on_machine_admission")
+                with self.assertRaisesRegex(ValueError, "blocked_on_machine_admission"):
+                    config.check_config(root / "configs/C4090-LORA-TURN.json")
+            job = {"schema": delivery.SCHEMA, "stage": "second_round", "action": "group",
+                   "group": "cloud4090-lora", "methods": ["ce"], "owner": "synthetic",
+                   "gpu_uuids": ["GPU-" + UUID], "machine": str(root / "machine.json"),
+                   "assets": str(path), "output": str(root / "job")}
+            delivery.validate_job(job)
+            with self.assertRaisesRegex(ValueError, "CE alone"):
+                delivery.validate_job({**job, "methods": ["turn"]})
+            with self.assertRaisesRegex(ValueError, "GPU"):
+                delivery.validate_job({**job, "gpu_uuids": ["GPU-" + UUID, "GPU-" + UUID]})
 
     def test_real_feasibility_snscl_active_updates_never_save_weights(self):
         from aic_robust_clip.round2.methods import MethodState

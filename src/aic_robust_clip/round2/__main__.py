@@ -10,7 +10,7 @@ from .config import prepare_configs, check_config
 def parser():
     p = argparse.ArgumentParser(description="复赛独立入口；配置准备不训练、不下载。")
     sub = p.add_subparsers(dest="command", required=True)
-    prepare = sub.add_parser("prepare", help="生成八个配置；缺资产/准入时保留 blocked 状态")
+    prepare = sub.add_parser("prepare", help="生成复赛配置；缺资产/准入时保留 blocked 状态")
     prepare.add_argument("--assets")
     prepare.add_argument("--receipt")
     prepare.add_argument("--output", required=True)
@@ -26,7 +26,8 @@ def parser():
         q.add_argument("--assets", required=True)
         q.add_argument("--machine", required=True)
     q = sub.add_parser("checks")
-    q.add_argument("--group", choices=("t4", "4060-a", "4060-b"), required=True)
+    q.add_argument("--group", choices=("t4", "4060-a", "4060-b", "cloud4090-lora", "cloud4090-full"), required=True)
+    q.add_argument("--methods", nargs="+", choices=("ce", "turn"), help="4090：CE 或 CE TURN")
     q.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     q.add_argument("--previous-failure")
     q.add_argument("--machine-history", help="4060 必填：原 B04 失败机器身份核对记录")
@@ -43,7 +44,7 @@ def parser():
         q.add_argument("--method", choices=("ce", "turn", "fine", "snscl"), required=name == "profile-one")
         q.add_argument("--eval-windows", type=int, choices=(1, 3), default=1)
         if name == "profile":
-            q.add_argument("--group", choices=("t4", "4060-a", "4060-b"), required=True)
+            q.add_argument("--group", choices=("t4", "4060-a", "4060-b", "cloud4090-lora", "cloud4090-full"), required=True)
             q.add_argument("--choice", help="通过 choose 得到的共同配置，固定后做三次 eval 窗口")
         else:
             q.add_argument("--adaptation", choices=("full_visual", "lora"), required=True)
@@ -52,7 +53,8 @@ def parser():
             q.add_argument("--barrier", help=argparse.SUPPRESS)
     q = sub.add_parser("choose")
     q.add_argument("--profiles", nargs="+", required=True)
-    q.add_argument("--group", choices=("t4", "4060-a", "4060-b"), required=True)
+    q.add_argument("--group", choices=("t4", "4060-a", "4060-b", "cloud4090-lora", "cloud4090-full"), required=True)
+    q.add_argument("--methods", nargs="+", choices=("ce", "turn"), help="4090：CE 或 CE TURN")
     q.add_argument("--output", required=True)
     q = sub.add_parser("feasibility", help="全train初始评分及两次真实有界更新；不保存权重")
     for key in ("assets", "machine", "output"):
@@ -66,7 +68,8 @@ def parser():
     q = sub.add_parser("admit")
     for key in ("assets", "owner", "output"):
         q.add_argument("--" + key, required=True)
-    q.add_argument("--group", choices=("t4", "4060-a", "4060-b"), required=True)
+    q.add_argument("--group", choices=("t4", "4060-a", "4060-b", "cloud4090-lora", "cloud4090-full"), required=True)
+    q.add_argument("--methods", nargs="+", choices=("ce", "turn"), help="4090：CE 或 CE TURN")
     for key in ("checks", "profiles", "final-profiles", "feasibility"):
         q.add_argument("--" + key, nargs="+", required=True)
     q.add_argument("--concurrency")
@@ -99,7 +102,8 @@ def main(argv=None):
             value = (assets.cache if c == "cache" else assets.init_head)(args.assets, machine=args.machine)
         elif c == "checks":
             value = admission.checks(args.output, group=args.group, device=args.device,
-                                     previous_failure=args.previous_failure, machine_history=args.machine_history)
+                                     previous_failure=args.previous_failure, machine_history=args.machine_history,
+                                     methods=args.methods)
         elif c == "startup-check":
             value = admission.synthetic_check(args.method, args.adaptation, device=args.device, precision=args.precision)
         elif c == "profile":
@@ -107,7 +111,7 @@ def main(argv=None):
             if choice:
                 from .config import verify_seal
                 verify_seal(choice)
-                if choice["group"] != args.group:
+                if choice["group"] != args.group or args.method not in choice.get("methods", admission.methods_for(args.group)):
                     raise ValueError("engineering choice group mismatch")
             engineering = (choice["engineering"]["microbatch"], choice["engineering"]["workers"]) if choice else None
             value = admission.profile(args.assets, group=args.group, machine=args.machine, output=args.output,
@@ -117,7 +121,7 @@ def main(argv=None):
                 microbatch=args.microbatch, workers=args.workers, machine=args.machine, output=args.output,
                 eval_windows=args.eval_windows, barrier=args.barrier)
         elif c == "choose":
-            value = admission.choose(args.profiles, group=args.group, output=args.output)
+            value = admission.choose(args.profiles, group=args.group, output=args.output, methods=args.methods)
         elif c == "feasibility":
             value = admission.feasibility(args.assets, method=args.method, adaptation=args.adaptation,
                                           machine=args.machine, output=args.output)
@@ -128,7 +132,7 @@ def main(argv=None):
             value = admission.admit(args.assets, group=args.group, owner=args.owner, check_paths=args.checks,
                 profile_paths=args.profiles, final_paths=args.final_profiles, output=args.output,
                 concurrency=args.concurrency, previous_failure_required=args.previous_failure_required,
-                feasibility_paths=args.feasibility)
+                feasibility_paths=args.feasibility, methods=args.methods)
         elif c == "run":
             value = engine.run(args.config, machine=args.machine, resume=args.resume, stop_after_epoch=args.stop_after_epoch)
         else:

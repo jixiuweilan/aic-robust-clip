@@ -129,6 +129,10 @@ deliverables are subject to a later notice.
 - 公开赛题页仍列初赛 24,967 张测试图片；它未公开完整文件名单或 SHA-256。
   因此只能确认数量口径未变，不能仅凭公开网页保证平台当前数据包与本地逐文件一致。
 
+2026-09-23 查阅该通知的[附件 1 复赛日程表](https://www.aicomp.cn/wp-content/uploads/2026/09/%E9%99%84%E4%BB%B61%EF%BC%9A%E7%AC%AC%E5%85%AB%E5%B1%8AAIC%E7%AE%97%E6%B3%95%E5%A4%A7%E8%B5%9B%E7%AE%97%E6%B3%95%E6%8C%91%E6%88%98%E8%B5%9B%E9%81%93%E5%A4%8D%E8%B5%9B%E8%B5%9B%E4%BA%8B%E6%97%A5%E7%A8%8B%E8%A1%A8.pdf)：
+赛题 4 的复赛结果文档截止为 10 月 11 日 20:00、作品文档截止为当日 23:59
+（北京时间）；组委会注明后续调整将在赛题 QQ 群通知，提交前仍以平台实际状态为准。
+
 Teams may contain one to three students from the same institution, with up to
 two advisors. The track notice lists a fee of CNY 500 per team. Confirm all
 deadlines, eligibility, fees, and deliverables in the live registration system
@@ -146,8 +150,9 @@ before acting on them.
 2026-09-20 复赛工程协议：独立 `second_round` 目录，仅使用收到的当轮训练包，
 完整解码、精确重复组划分 train/dev/confirm 约 80/10/10、seed 17。
 这是[项目比较协议](round2/development.md)，不是新增官方规则；如有官方独立验证集或新
-使用限制，先修订协议。当前尚未取得并核验复赛资产，不从公开页面猜测收到的包版本
-或强制图片数量；下载由用户完成。本轮仅安排 train/dev，无 confirm/test 或排行榜提交。
+使用限制，先修订协议。复赛 `train.zip` 已收到，但完整审计和公共 HEAD20 尚未完成；
+不从公开页面猜测收到的包版本或强制图片数量。下载由用户完成。本轮仅安排
+train/dev，无 confirm/test 或排行榜提交。
 
 - [Task page](https://www.aicomp.cn/tracks/tracks-1/3714.html)
 - [Challenge-track notice](https://www.aicomp.cn/notice/notice-1/3629.html)

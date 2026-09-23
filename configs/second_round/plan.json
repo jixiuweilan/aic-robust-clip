@@ -1,6 +1,6 @@
 {
-  "version": "round2-v1",
-  "status": "blocked_on_round2_assets",
+  "version": "round2-cloud4090-v1",
+  "status": "blocked_on_audit_head_and_admission",
   "recipe": {
     "stage": "second_round",
     "seed": 17,
@@ -41,55 +41,32 @@
   },
   "runs": [
     {
-      "run_id": "T4-0-CE",
-      "group": "t4",
+      "run_id": "C4090-LORA-CE",
+      "group": "cloud4090-lora",
+      "adaptation": "lora",
+      "method": "ce"
+    },
+    {
+      "run_id": "C4090-FULL-CE",
+      "group": "cloud4090-full",
       "adaptation": "full_visual",
       "method": "ce"
     },
     {
-      "run_id": "T4-1-TURN",
-      "group": "t4",
+      "run_id": "C4090-FULL-TURN",
+      "group": "cloud4090-full",
       "adaptation": "full_visual",
       "method": "turn"
     },
     {
-      "run_id": "T4-2-FINE",
-      "group": "t4",
-      "adaptation": "full_visual",
-      "method": "fine"
-    },
-    {
-      "run_id": "T4-3-SNSCL",
-      "group": "t4",
-      "adaptation": "full_visual",
-      "method": "snscl"
-    },
-    {
-      "run_id": "4060-A-CE",
-      "group": "4060-a",
+      "run_id": "C4090-LORA-TURN",
+      "group": "cloud4090-lora",
       "adaptation": "lora",
-      "method": "ce"
-    },
-    {
-      "run_id": "4060-A-TURN",
-      "group": "4060-a",
-      "adaptation": "lora",
-      "method": "turn"
-    },
-    {
-      "run_id": "4060-B-CE",
-      "group": "4060-b",
-      "adaptation": "lora",
-      "method": "ce"
-    },
-    {
-      "run_id": "4060-B-FINE",
-      "group": "4060-b",
-      "adaptation": "lora",
-      "method": "fine"
+      "method": "turn",
+      "condition": "fallback_only_if_full_turn_not_admitted"
     }
   ],
   "assets": null,
   "admission": null,
-  "note": "规划清单；使用 round2 prepare 生成可校验的独立配置。"
+  "note": "首批最多三支；历史八支配置保留作旧资源回归，本轮不运行。"
 }

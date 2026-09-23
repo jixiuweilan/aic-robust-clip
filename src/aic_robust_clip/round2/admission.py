@@ -16,7 +16,8 @@ from ..environment import machine_fingerprint
 from ..gpu_identity import normalize_gpu_uuid, cuda_gpu_uuids
 from ..models.provision import file_sha256
 from ..runtime import current_code_revision, seed_everything
-from .config import VERSION, RUNS, RECIPE, sealed, verify_seal, stage_path, load_assets, head_descriptor
+from .config import (VERSION, RUNS, RECIPE, CLOUD_GROUPS, GROUPS, adaptation_for,
+                     sealed, verify_seal, stage_path, load_assets, head_descriptor)
 
 GRID = [(b, w) for b in (4, 8, 16, 32) for w in (2, 4)]
 
@@ -36,8 +37,19 @@ def runtime_identity():
     return result
 
 
-def methods_for(group):
-    return [method for _, (g, _, method) in RUNS.items() if g == group]
+def methods_for(group, selected=None):
+    if group not in GROUPS:
+        raise ValueError("unknown round2 admission group")
+    available = [method for _, (g, _, method) in RUNS.items() if g == group]
+    if selected is None:
+        return available
+    if group not in CLOUD_GROUPS:
+        if selected != available:
+            raise ValueError("legacy admission must cover every assigned method")
+        return available
+    if not isinstance(selected, list) or selected not in (["ce"], ["ce", "turn"]):
+        raise ValueError("cloud4090 methods must be CE alone or CE then TURN")
+    return selected
 
 
 def feasibility(assets_path, *, method, adaptation, machine, output):
@@ -127,11 +139,10 @@ def synthetic_check(method, adaptation, *, device, precision, zero_selection_pol
             "updates": 2, "samples": 4, "status": "passed", "evidence": "synthetic_correctness_only"}
 
 
-def checks(output, *, group, device="cuda", previous_failure=None, machine_history=None):
+def checks(output, *, group, device="cuda", previous_failure=None, machine_history=None, methods=None):
     root = stage_path(output)
     root.mkdir(parents=True, exist_ok=False)
-    if group not in {"t4", "4060-a", "4060-b"}:
-        raise ValueError("unknown group")
+    methods = methods_for(group, methods)
     # A subprocess isolates unittest RNG and CUDA initialization from checks.
     script = '''import json,unittest,sys
 suite=unittest.defaultTestLoader.discover("tests")
@@ -150,13 +161,13 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
             results.append(result.returncode)
             if result.returncode:
                 raise ValueError(f"acceptance command {i} failed; preserve log")
-        adaptation = "full_visual" if group == "t4" else "lora"
-        for method in methods_for(group):
+        adaptation = adaptation_for(group)
+        for method in methods:
             for precision in (("fp32", "fp16") if device == "cuda" else ("fp32",)):
                 startup.append(synthetic_check(method, adaptation, device=device, precision=precision))
         runtime = runtime_identity()
         history = read_json(machine_history) if machine_history else None
-        if group != "t4" and device == "cuda":
+        if group in {"4060-a", "4060-b"} and device == "cuda":
             if (not history or history.get("host") != runtime["host"]
                     or normalize_gpu_uuid(history.get("gpu_uuid")) != normalize_gpu_uuid(runtime["gpu"]["uuid"])
                     or type(history.get("original_b04_failure")) is not bool
@@ -168,7 +179,7 @@ sys.exit(not r.wasSuccessful() or bool(r.skipped))
             raise ValueError("original B04 failure machine/evidence identity is incomplete")
         if history and history["original_b04_failure"] and prior is None:
             raise ValueError("original B04 failed machine requires original evidence and successful retest")
-        value = sealed({"version": VERSION, "kind": "checks", "group": group, "runtime": runtime,
+        value = sealed({"version": VERSION, "kind": "checks", "group": group, "methods": methods, "runtime": runtime,
                         "device": device, "suite": read_json(root / "suite.json"), "returncodes": results,
                         "startup": startup, "previous_failure": prior, "machine_history": history,
                         "logs": {f"check-{i}.log": file_sha256(root / f"check-{i}.log") for i in range(4)}})
@@ -337,7 +348,7 @@ def profile(assets, *, group, machine, output, method=None, engineering=None, ev
                 rows.append({"path": str(record), "sha256": file_sha256(record)})
                 continue
             command = [sys.executable, "-m", "aic_robust_clip.round2", "profile-one", "--assets", str(assets),
-                "--method", m, "--adaptation", "full_visual" if group == "t4" else "lora", "--microbatch", str(b),
+                "--method", m, "--adaptation", adaptation_for(group), "--microbatch", str(b),
                 "--workers", str(w), "--machine", str(machine), "--output", str(target), "--eval-windows", str(eval_windows)]
             with (root / f"{target.name}.log").open("w") as handle:
                 result = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT)
@@ -388,8 +399,10 @@ def read_profiles(paths):
     return rows
 
 
-def choose(paths, *, group, output):
-    value = sealed({"version": VERSION, "group": group, "engineering": choose_common(read_profiles(paths), methods_for(group)),
+def choose(paths, *, group, output, methods=None):
+    methods = methods_for(group, methods)
+    value = sealed({"version": VERSION, "group": group, "methods": methods,
+                    "engineering": choose_common(read_profiles(paths), methods),
                     "profile_indices": [{"path": str(Path(p).resolve()), "sha256": file_sha256(p)} for p in paths]})
     if Path(output).exists():
         raise FileExistsError(output)
@@ -403,8 +416,13 @@ def validate_receipt(receipt, assets, *, live):
         raise ValueError("new round2 admission required; legacy receipts forbidden")
     if receipt.get("asset_digest") != assets.descriptor["digest"] or receipt.get("head_sha256") != head_descriptor(assets)["sha256"]:
         raise ValueError("admission asset/head mismatch")
-    if receipt.get("group") not in {"t4", "4060-a", "4060-b"} or not receipt.get("owner"):
+    if receipt.get("group") not in GROUPS or not receipt.get("owner"):
         raise ValueError("admission group/owner missing")
+    if receipt["group"] in CLOUD_GROUPS and "methods" not in receipt:
+        raise ValueError("cloud4090 receipt must declare admitted methods")
+    methods = methods_for(receipt["group"], receipt.get("methods"))
+    if set(receipt.get("assignments", {})) != set(methods):
+        raise ValueError("admission method assignments differ")
     if receipt["source"] != current_code_revision():
         raise ValueError("new code requires new admission")
     if live:
@@ -420,17 +438,18 @@ def validate_receipt(receipt, assets, *, live):
 
 
 def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths, output,
-          concurrency=None, previous_failure_required=False, feasibility_paths=()):
+          concurrency=None, previous_failure_required=False, feasibility_paths=(), methods=None):
+    methods = methods_for(group, methods)
     assets = load_assets(assets_path, verify_archives=True)
     head = head_descriptor(assets)
     rows = read_profiles(profile_paths)
-    expected_grid = {(m, b, w) for m in methods_for(group) for b, w in GRID}
+    expected_grid = {(m, b, w) for m in methods for b, w in GRID}
     if len(rows) != len(expected_grid) or {(r["method"], r["microbatch"], r["workers"]) for r in rows} != expected_grid:
         raise ValueError("retain every fixed-grid success and failure, with no retries")
-    engineering = choose_common(rows, methods_for(group))
+    engineering = choose_common(rows, methods)
     finals = read_profiles(final_paths)
     selected = [r for r in finals if r.get("status") == "passed" and (r.get("microbatch"), r.get("workers")) == (engineering["microbatch"], engineering["workers"])]
-    if len(finals) != len(selected) or len(selected) != len(methods_for(group)) or {r["method"] for r in selected} != set(methods_for(group)):
+    if len(finals) != len(selected) or len(selected) != len(methods) or {r["method"] for r in selected} != set(methods):
         raise ValueError("final windows do not cover every assigned method")
     if any(len(r["eval_seconds"]) != 3 or not r["dev_student_replay"] or not r["workers_closed"]
            or r["peak_occupied_bytes"] > .85 * r["total_bytes"] for r in selected):
@@ -439,11 +458,12 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
     runtimes = []
     for check in checks_values:
         verify_seal(check)
-        if check.get("version") != VERSION or check.get("kind") != "checks" or check["group"] != group or check["device"] != "cuda":
+        if (check.get("version") != VERSION or check.get("kind") != "checks" or check["group"] != group
+                or check["device"] != "cuda" or check.get("methods", methods_for(group)) != methods):
             raise ValueError("current CUDA checks required")
         if check["suite"]["tests"] <= 0 or any(check["suite"][k] for k in ("failures", "errors", "skips")) or any(check["returncodes"]):
             raise ValueError("checks not clean")
-        if group != "t4":
+        if group in {"4060-a", "4060-b"}:
             history = check.get("machine_history")
             if (not history or history.get("host") != check["runtime"]["host"]
                     or normalize_gpu_uuid(history.get("gpu_uuid")) != normalize_gpu_uuid(check["runtime"]["gpu"]["uuid"])
@@ -451,7 +471,7 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
                     or not history.get("reviewer") or not history.get("basis")
                     or history["original_b04_failure"] and not check.get("previous_failure")):
                 raise ValueError("unresolved 4060 original failure machine identity")
-        expected = {(m, p) for m in methods_for(group) for p in ("fp32", "fp16")}
+        expected = {(m, p) for m in methods for p in ("fp32", "fp16")}
         if {(r["method"], r["precision"]) for r in check["startup"] if r["status"] == "passed" and r["updates"] == 2} != expected:
             raise ValueError("missing FP32/FP16 two-update method checks")
         runtimes.append(check["runtime"])
@@ -464,18 +484,20 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
     if group == "t4" and (len({normalize_gpu_uuid(r["runtime"]["gpu"]["uuid"]) for r in selected}) != 4
                           or any("T4" not in r["gpu"]["name"] for r in runtimes)):
         raise ValueError("one method on each of four T4 GPUs required")
-    if group != "t4" and any("4060" not in r["gpu"]["name"] for r in runtimes):
+    if group in {"4060-a", "4060-b"} and any("4060" not in r["gpu"]["name"] for r in runtimes):
         raise ValueError("4060 machine required")
+    if group in CLOUD_GROUPS and any("4090" not in r["gpu"]["name"] for r in runtimes):
+        raise ValueError("cloud4090 requires an RTX 4090")
     for row in [r for r in rows if r.get("status") == "passed"] + selected:
         assigned = next(r for r in selected if r["method"] == row["method"])
         if normalize_gpu_uuid(row["runtime"]["gpu"]["uuid"]) != normalize_gpu_uuid(assigned["runtime"]["gpu"]["uuid"]):
             raise ValueError("method GPU assignment changed between grid and final windows")
         if row["runtime"] not in runtimes or row["runtime"]["source"] != current_code_revision() or row["asset_digest"] != assets.descriptor["digest"] or row["head_sha256"] != head["sha256"]:
             raise ValueError("profile/checks/asset source identity mismatch")
-        if row["adaptation"] != ("full_visual" if group == "t4" else "lora"):
+        if row["adaptation"] != adaptation_for(group):
             raise ValueError("wrong adaptation in profile")
     feasible = [read_json(p) for p in feasibility_paths]
-    if len(feasible) != len(methods_for(group)) or {r.get("method") for r in feasible} != set(methods_for(group)):
+    if len(feasible) != len(methods) or {r.get("method") for r in feasible} != set(methods):
         raise ValueError("initial real train feasibility required for every method")
     for row in feasible:
         verify_seal(row)
@@ -514,7 +536,7 @@ def admit(assets_path, *, group, owner, check_paths, profile_paths, final_paths,
             if row["digest"] != digest:
                 raise ValueError("concurrency child profile digest mismatch")
             evidence.append(str(path))
-    value = sealed({"version": VERSION, "kind": "admission", "status": "passed", "group": group, "owner": owner,
+    value = sealed({"version": VERSION, "kind": "admission", "status": "passed", "group": group, "methods": methods, "owner": owner,
                     "source": current_code_revision(), "runtimes": runtimes, "recipe": RECIPE,
                     "assignments": {r["method"]: r["runtime"]["gpu"]["uuid"] for r in selected},
                     "asset_digest": assets.descriptor["digest"], "head_sha256": head["sha256"], "engineering": engineering,

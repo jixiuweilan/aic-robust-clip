@@ -67,6 +67,12 @@ bounded checks that training can start successfully.
 
 ## Engineering expectations
 
+- 用户于 2026-09-23 将复赛首批工作改为单张租用 RTX 4090 串行执行，取代下述
+  T4/4060 六卡安排。先完成完整资产审计、HEAD20-GCE 和新机准入；首批最多运行
+  LoRA CE、全视觉 CE、全视觉 TURN 三支。全视觉 TURN 不准入而 LoRA TURN 准入时，
+  第三支改为 LoRA TURN。FINE/SNSCL 与旧六卡任务暂不执行。每支保留 30 轮日程，
+  第 10 轮评分、验证、保存后暂停。当前入口见 `docs/round2/cloud4090-execution.md`。
+
 - 用户于 2026-09-22 固定复赛分工：4060-A、4060-B 分别由组员 A、B 操作，
   不再重复询问操作者。A 按 LoRA CE → TURN，B 按 LoRA CE → FINE；
   每支独立从公共 HEAD20-GCE 初始化，30 轮调度、完成第 10 轮后暂停。
