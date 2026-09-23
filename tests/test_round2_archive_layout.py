@@ -13,6 +13,24 @@ from aic_robust_clip.contracts import read_json
 
 
 class ArchiveLayoutTests(unittest.TestCase):
+    def test_pillow_exif_syntax_error_is_recorded_without_stopping_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "train.zip"
+            data = io.BytesIO()
+            Image.new("RGB", (2, 2)).save(data, format="PNG")
+            with zipfile.ZipFile(archive, "w") as z:
+                z.writestr("train/0000/bad.png", data.getvalue())
+                z.writestr("train/0000/good.png", data.getvalue())
+            with patch("aic_robust_clip.data.audit._decode_pixels", side_effect=[
+                SyntaxError("not a TIFF file"), ("0" * 64, 2, 2, 3)]):
+                report = audit_archive(archive, stage="second_round", role="train", member_prefix="train")
+            self.assertTrue(report.complete)
+            self.assertFalse(report.usable)
+            self.assertEqual(len(report.records), 2)
+            self.assertEqual(report.records[0].decode_status, "failed")
+            self.assertEqual(report.records[1].decode_status, "decoded")
+            self.assertEqual(report.failures[0].member_path, "train/0000/bad.png")
+
     def test_explicit_wrapper_keeps_names_hashes_and_strict_default(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "second_round"

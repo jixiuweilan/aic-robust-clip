@@ -303,7 +303,7 @@ def audit_archive(
                         decode_status = "decoded_truncated_recovery"
                 else:
                     decode_status = "crc_verified"
-            except (AuditError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
+            except (AuditError, OSError, RuntimeError, SyntaxError, zipfile.BadZipFile) as exc:
                 reason = str(exc)
                 if decode_status == "unchecked":
                     decode_status = "failed"
