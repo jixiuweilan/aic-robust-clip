@@ -142,5 +142,7 @@ bounded checks that training can start successfully.
 - Keep data auditing separate from training and ensure audit outputs cannot
   silently alter labels or splits.
 - Validate `pred_results.csv` with the repository validator before packaging.
-- Run focused tests, the full available suite, and `git diff --check` before
-  considering a change complete.
+- For executable code or configuration changes, run focused tests and the full
+  available suite before considering the change complete. For documentation or
+  instruction-only changes that cannot affect execution, review the text and
+  run `git diff --check`; do not run tests without a concrete behavior risk.
